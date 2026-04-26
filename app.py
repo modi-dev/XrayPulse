@@ -66,12 +66,13 @@ def api_recent():
 @app.route('/api/history')
 @auth.login_required
 def api_history():
-    try:
-        data = get_aggregated_history()
-        # Форматируем для фронтенда
-        return jsonify([{"type": r[0], "desc": r[1], "count": r[2]} for r in data])
-    except Exception as e:
-        return jsonify({"error": str(e)}), 500
+    with sqlite3.connect('xray_monitor.db') as conn:
+        conn.row_factory = sqlite3.Row # Это позволит обращаться к полям по именам
+        cursor = conn.cursor()
+        # Берем последние 50 записей
+        cursor.execute('SELECT timestamp, source, destination, error_type as type, description as desc FROM error_history ORDER BY id DESC LIMIT 50')
+        rows = cursor.fetchall()
+        return jsonify([dict(row) for row in rows])
 
 if __name__ == '__main__':
     app.run(host='0.0.0.0', port=5000)
