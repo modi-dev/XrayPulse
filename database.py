@@ -28,6 +28,7 @@ ERROR_MAPPING = {
 
 def init_db():
     with sqlite3.connect('xray_monitor.db') as conn:
+        # Существующая таблица...
         conn.execute('''
             CREATE TABLE IF NOT EXISTS error_history (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -38,6 +39,9 @@ def init_db():
                 description TEXT
             )
         ''')
+        # ДОБАВЛЯЕМ ИНДЕКСЫ для мгновенной сортировки и фильтрации
+        conn.execute('CREATE INDEX IF NOT EXISTS idx_timestamp ON error_history(timestamp DESC)')
+        conn.execute('CREATE INDEX IF NOT EXISTS idx_error_type ON error_history(error_type)')
         conn.commit()
 
 def save_errors(data_list):

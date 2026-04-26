@@ -1,4 +1,5 @@
 import os
+import sqlite3
 from dotenv import load_dotenv
 from flask import Flask, jsonify, render_template
 from flask_httpauth import HTTPBasicAuth
@@ -66,13 +67,21 @@ def api_recent():
 @app.route('/api/history')
 @auth.login_required
 def api_history():
-    with sqlite3.connect('xray_monitor.db') as conn:
-        conn.row_factory = sqlite3.Row # Это позволит обращаться к полям по именам
-        cursor = conn.cursor()
-        # Берем последние 50 записей
-        cursor.execute('SELECT timestamp, source, destination, error_type as type, description as desc FROM error_history ORDER BY id DESC LIMIT 50')
-        rows = cursor.fetchall()
-        return jsonify([dict(row) for row in rows])
+    try:
+        with sqlite3.connect('xray_monitor.db') as conn:
+            conn.row_factory = sqlite3.Row
+            cursor = conn.cursor()
+            # Берем последние 500 записей без группировки
+            cursor.execute('''
+                SELECT timestamp, source, destination, error_type as type, description as desc 
+                FROM error_history 
+                ORDER BY timestamp DESC 
+                LIMIT 500
+            ''')
+            rows = cursor.fetchall()
+            return jsonify([dict(row) for row in rows])
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
 
 if __name__ == '__main__':
     app.run(host='0.0.0.0', port=5000)

@@ -5,6 +5,15 @@
     <title>XrayPulse Dashboard</title>
     <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
     <script src="https://cdn.tailwindcss.com"></script>
+    <style>
+        /* Стили для скроллбара внутри деталей */
+        .custom-scrollbar::-webkit-scrollbar { width: 4px; }
+        .custom-scrollbar::-webkit-scrollbar-track { background: #1f2937; }
+        .custom-scrollbar::-webkit-scrollbar-thumb { background: #3b82f6; border-radius: 10px; }
+        
+        /* Анимация при наведении на строку */
+        .group:hover .truncate { max-width: none; white-space: normal; }
+    </style>
 </head>
 <body class="bg-gray-900 text-gray-100 p-4 md:p-10">
     <div class="max-w-5xl mx-auto">
