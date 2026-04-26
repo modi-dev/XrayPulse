@@ -5,6 +5,9 @@ from flask_httpauth import HTTPBasicAuth
 from werkzeug.security import generate_password_hash, check_password_hash
 from database import init_db, save_errors, get_aggregated_history
 from parser import parse_xray_errors
+from apscheduler.schedulers.background import BackgroundScheduler
+from database import init_db, save_errors, cleanup_old_logs, get_aggregated_history
+from parser import parse_xray_errors
 
 load_dotenv()
 
@@ -23,6 +26,18 @@ def verify_password(username, password):
 
 # Инициализируем БД при запуске
 init_db()
+
+def update_logs_job():
+    """Функция, которая будет бегать в фоне"""
+    print("Фоновое обновление логов...")
+    new_logs = parse_xray_errors(limit=500)
+    save_errors(new_logs)
+    cleanup_old_logs(days=7)
+
+# Запускаем планировщик
+scheduler = BackgroundScheduler()
+scheduler.add_job(func=update_logs_job, trigger="interval", seconds=30)
+scheduler.start()
 
 @app.route('/')
 @auth.login_required
@@ -51,12 +66,12 @@ def api_recent():
 @app.route('/api/history')
 @auth.login_required
 def api_history():
-    data = get_aggregated_history()
-    return jsonify([{
-        "type": r[0],
-        "desc": r[1],
-        "count": r[2]
-    } for r in data])
+    try:
+        data = get_aggregated_history()
+        # Форматируем для фронтенда
+        return jsonify([{"type": r[0], "desc": r[1], "count": r[2]} for r in data])
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
 
 if __name__ == '__main__':
     app.run(host='0.0.0.0', port=5000)
