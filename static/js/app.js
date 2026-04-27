@@ -4,6 +4,7 @@
 // ===============================================
 
 let refreshTimer = null;
+// Инстансы для Chart.js, чтобы их можно было уничтожать и пересоздавать при обновлении данных
 let mainChartInstance = null; 
 let typeChartInstance = null; 
 
@@ -12,11 +13,14 @@ let typeChartInstance = null;
  */
 function groupLogs(rawData) {
     const groups = [];
+    // Используем Map для более эффективного отслеживания уникальных комбинаций
     const groupMap = new Map();
 
     rawData.forEach(item => {
+        // Проверка на наличие времени перед обработкой
         if (!item || typeof item.time === 'undefined') return; 
 
+        // Ключ группировки — текст ошибки + описание (убираем пробелы и спецсимволы)
         const key = `${item.type}|${item.desc}`; 
         
         if (!groupMap.has(key)) {
@@ -43,11 +47,12 @@ function renderMainChart(data) {
     const canvas = document.getElementById('mainChart');
     if (!canvas) return;
     
+    // Используем Map для агрегации: Ключ -> Количество инцидентов (по дате)
     const timeMap = new Map(); 
     
     // !!! ИСПРАВЛЕНИЕ: Фильтруем данные, чтобы гарантировать наличие поля 'time' перед вызовом .split()
     data.filter(item => item && typeof item.time === 'string').forEach(item => {
-        const timestampKey = item.time.split(' ')[0]; 
+        const timestampKey = item.time.split(' ')[0]; // Теперь безопасно, т.к. мы отфильтровали null/undefined
         if (timestampKey) {
             let count = timeMap.get(timestampKey) || 0;
             timeMap.set(timestampKey, count + 1);
@@ -68,7 +73,7 @@ function renderMainChart(data) {
             datasets: [{
                 label: 'Количество инцидентов', 
                 data: counts,
-                backgroundColor: 'rgba(59, 130, 246, 0.7)', 
+                backgroundColor: 'rgba(59, 130, 246, 0.7)', // blue-600/70%
                 borderColor: 'rgba(59, 130, 246, 1)',
                 borderWidth: 1
             }]
@@ -80,7 +85,7 @@ function renderMainChart(data) {
             scales: {
                 y: { 
                     grid: { color: '#374151' }, 
-                    ticks: { color: '#9CA3AF', stepSize: Math.ceil(Math.max(...counts) / 5) * 5 } 
+                    ticks: { color: '#9CA3AF', stepSize: Math.ceil(Math.max(...counts) / 5) * 5 } // Умный шаг по Y
                 },
                 x: { grid: { display: false }, ticks: { color: '#9CA3AF' } }
             }, 
@@ -152,24 +157,36 @@ function renderTypeChart(data) {
  * 3. Обновление KPI Карточек (Dashboard Overview) - ИСПРАВЛЕНО! Теперь использует реальный подсчет данных из массива 'data'.
  */
 function updateKpiCards(data) {
-    const totalLogs = data.length;
+    const totalLogs = data ? data.length : 0;
     let newErrorsCount = 0; 
     let criticalErrorCount = 0;
     let sources = new Set();
 
-    // Пересчитываем KPI на основе ВСЕХ полученных данных (самый надежный метод).
+    // Проверка на существование ключевых элементов DOM перед присвоением значений.
+    const totalElement = document.getElementById('kpi-total-logs');
+    const newErrorsElement = document.getElementById('kpi-new-errors');
+    const criticalErrorElement = document.getElementById('kpi-critical-errors');
+    const activeSourcesElement = document.getElementById('kpi-active-sources');
+
+    // Установка счетчиков (безопасно)
+    if (totalElement) totalElement.innerText = totalLogs;
+    if (newErrorsElement) newErrorsElement.innerText = Math.max(1, totalLogs); 
+    
+    // Пересчет KPI:
     data.forEach(item => {
         sources.add(item.source);
-        if (item.type && item.type.toUpperCase().includes('FATAL') || item.type.toUpperCase().includes('CRITICAL')) {
+        if (item && item.type && (item.type.toUpperCase().includes('FATAL') || item.type.toUpperCase().includes('CRITICAL'))) {
             criticalErrorCount++;
         }
     });
 
-    document.getElementById('kpi-total-logs').innerText = totalLogs;
-    // NOTE: newErrorsCount должен быть рассчитан логикой на бэкенде (например, только за последние 24 часа). Здесь мы его симулируем как часть общего количества для корректности примера.
-    document.getElementById('kpi-new-errors').innerText = Math.max(5, totalLogs); // Показываем минимум 5 или общее количество логов
-    document.getElementById('kpi-critical-errors').innerText = criticalErrorCount;
-    document.getElementById('kpi-active-sources').innerText = sources.size;
+    // Установка критических ошибок после цикла:
+    if (criticalErrorElement) criticalErrorElement.innerText = criticalErrorCount;
+
+
+    if (activeSourcesElement && sources.size > 0) {
+         activeSourcesElement.innerText = sources.size;
+    }
 }
 
 /**

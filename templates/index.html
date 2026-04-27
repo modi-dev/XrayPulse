@@ -85,19 +85,17 @@
         <!-- START: Графики (Тренды и Причины) -->
         <div class="grid grid-cols-1 lg:grid-cols-2 gap-6 mb-10">
             <!-- График 1: Тренды ошибок по времени -->
-            <div class="bg-gray-800 p-6 rounded-xl border border-gray-700 shadow-xl">
+            <div class="bg-gray-800 p-6 rounded-xl border border-gray-700 shadow-xl h-[350px]">
                 <h3 class="text-lg font-semibold text-blue-400 mb-4">Трендовый анализ (Количество ошибок по времени)</h3>
                 <!-- Увеличиваем высоту, чтобы было видно данные -->
                 <canvas id="mainChart" height="350"></canvas>
             </div>
 
             <!-- График 2: Распределение типов ошибок -->
-            <div class="bg-gray-800 p-6 rounded-xl border border-gray-700 shadow-xl">
+            <div class="bg-gray-800 p-6 rounded-xl border border-gray-700 shadow-xl h-[350px]">
                 <h3 class="text-lg font-semibold text-blue-400 mb-4">Топ N причин ошибок (Распределение)</h3>
-                <!-- Увеличиваем высоту, чтобы было видно данные -->
-                <div style="height: 350px;">
-                    <canvas id="typeChart"></canvas>
-                </div>
+            <!-- Увеличиваем высоту, чтобы было видно данные -->
+                <canvas id="typeChart" height="350"></canvas>
             </div>
         </div>
         <!-- END: Графики -->
