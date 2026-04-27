@@ -3,12 +3,21 @@ import sqlite3
 from dotenv import load_dotenv
 from flask import Flask, jsonify, render_template
 from flask_httpauth import HTTPBasicAuth
-from werkzeug.security import generate_password_hash, check_password_hash
-from database import init_db, save_errors, get_aggregated_history
+# Объединяем итоговый импорт из database
+from database import init_db, save_errors, get_aggregated_history, cleanup_old_logs
 from parser import parse_xray_errors
 from apscheduler.schedulers.background import BackgroundScheduler
-from database import init_db, save_errors, cleanup_old_logs, get_aggregated_history
-from parser import parse_xray_errors
+
+LOG_FILE = "monitor_job.log" # Добавляем константу для файла логов
+
+def log_message(message):
+    """Простая функция логирования в файл и вывод в консоль."""
+    import datetime
+    timestamp = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    log_entry = f"[{timestamp}] {message}\n"
+    print(log_entry.strip()) # Выводим в консоль для мгновенной обратной связи
+    with open(LOG_FILE, "a", encoding="utf-8") as f:
+        f.write(log_entry)
 
 load_dotenv()
 
@@ -30,10 +39,17 @@ init_db()
 
 def update_logs_job():
     """Функция, которая будет бегать в фоне"""
-    print("Фоновое обновление логов...")
-    new_logs = parse_xray_errors(limit=500)
-    save_errors(new_logs)
-    cleanup_old_logs(days=7)
+    log_message("--- Начинается фоновое обновление логов ---")
+    try:
+        new_logs = parse_xray_errors(limit=500)
+        if new_logs:
+            save_errors(new_logs)
+            cleanup_old_logs(days=7)
+            log_message("Успешно сохранено и очищены старые логи.")
+        else:
+            log_message("Новых ошибок не обнаружено. Логирование пропущено.")
+    except Exception as e:
+        log_message(f"КРИТИЧЕСКАЯ ОШИБКА в фоновом задании: {e}")
 
 # Запускаем планировщик
 scheduler = BackgroundScheduler()
@@ -73,15 +89,19 @@ def api_history():
             cursor = conn.cursor()
             # Берем последние 500 записей без группировки
             cursor.execute('''
-                SELECT timestamp, source, destination, error_type as type, description as desc 
-                FROM error_history 
-                ORDER BY timestamp DESC 
+                SELECT timestamp, source, destination, error_type as type, description as desc
+                FROM error_history
+                ORDER BY timestamp DESC
                 LIMIT 500
             ''')
             rows = cursor.fetchall()
             return jsonify([dict(row) for row in rows])
+    except sqlite3.Error as e:
+        print(f"SQLite Error fetching history: {e}") # Добавлено логирование для дебага
+        return jsonify({"error": f"Database query failed: {str(e)}", "details": "Проверьте подключение к БД или схему таблицы."}), 500
     except Exception as e:
-        return jsonify({"error": str(e)}), 500
-
+        print(f"Unexpected Error fetching history: {e}") # Добавлено логирование для дебага
+        return jsonify({"error": f"An unexpected error occurred: {str(e)}", "details": "Обратитесь к администратору."}), 500
 if __name__ == '__main__':
     app.run(host='0.0.0.0', port=5000)
+
