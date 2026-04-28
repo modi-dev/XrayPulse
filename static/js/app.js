@@ -12,6 +12,25 @@ function getSelectedPeriod() {
     return select?.value || '7d';
 }
 
+function ownerBadge(owner, asn = null) {
+    if (!owner) return '';
+    const ownerLower = owner.toLowerCase();
+    let badgeClass = 'bg-violet-900/40 text-violet-300 border-violet-500/40';
+    let label = 'Public ASN';
+
+    if (ownerLower.includes('private/local')) {
+        badgeClass = 'bg-gray-800 text-gray-300 border-gray-600';
+        label = 'Private/Local';
+    } else if (ownerLower.includes('telegram')) {
+        badgeClass = 'bg-blue-900/40 text-blue-300 border-blue-500/40';
+        label = 'Telegram';
+    }
+
+    return `<span class="inline-flex items-center px-2 py-0.5 rounded border text-[10px] font-semibold ${badgeClass}">
+        ${label}${asn ? ` · ${asn}` : ''}
+    </span>`;
+}
+
 /**
  * Утилиты: Группировка и подсчет инцидентов (для таблицы)
  */
@@ -279,6 +298,8 @@ function renderTable(rawData) {
             <td class="px-4 py-3 text-xs text-green-400 font-mono">
                 <div class="whitespace-normal break-words">${group.source}</div>
                 ${group.source_location ? `<div class="text-[11px] text-gray-400 mt-1">${group.source_location}</div>` : ''}
+                ${group.source_owner ? `<div class="text-[11px] text-blue-300 mt-1">Owner: ${group.source_owner}</div>` : ''}
+                ${group.source_owner ? `<div class="mt-1">${ownerBadge(group.source_owner, group.source_asn)}</div>` : ''}
             </td>
             <td class="px-4 py-3 text-xs text-yellow-200 font-mono">${group.destination}</td>
             <td class="px-4 py-3 text-xs text-red-400 font-mono">
@@ -362,7 +383,11 @@ window.showErrorTypeDetails = async function(errorTypeId, errorTypeName = '') {
                     <div class="text-sm text-blue-300 font-mono">${evt.timestamp || 'N/A'}</div>
                     <div class="text-sm text-gray-200 mt-1">Источник: ${evt.source_ip || 'N/A'}${evt.source_port ? ':' + evt.source_port : ''}</div>
                     ${evt.source_location ? `<div class="text-sm text-gray-400">Локация: ${evt.source_location}</div>` : ''}
+                    ${evt.source_owner ? `<div class="text-sm text-blue-300">Owner: ${evt.source_owner}</div>` : ''}
+                    ${evt.source_owner ? `<div class="mt-1">${ownerBadge(evt.source_owner, evt.source_asn)}</div>` : ''}
                     <div class="text-sm text-gray-200">Назначение: ${evt.destination_host || 'N/A'}${evt.destination_port ? ':' + evt.destination_port : ''}</div>
+                    ${evt.destination_owner ? `<div class="text-sm text-cyan-300">Destination owner: ${evt.destination_owner}</div>` : ''}
+                    ${evt.destination_owner ? `<div class="mt-1">${ownerBadge(evt.destination_owner, evt.destination_asn)}</div>` : ''}
                     <div class="text-xs text-blue-400 mt-1">Показать исходное сообщение</div>
                 </button>
                 <div id="raw-msg-${idx}" class="hidden text-sm text-gray-400 mt-2 break-words bg-gray-800/70 rounded p-2 border border-gray-700">

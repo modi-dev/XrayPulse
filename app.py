@@ -2,6 +2,7 @@ import os
 import sqlite3
 import json
 import ipaddress
+from datetime import datetime
 from urllib.request import urlopen
 from urllib.parse import quote
 from functools import wraps
@@ -16,8 +17,10 @@ from database import (
     cleanup_old_logs,
     get_history_records,
     get_events_by_error_type,
-    get_cached_ip_geo,
-    upsert_ip_geo,
+    get_cached_ip_profile,
+    upsert_ip_profile,
+    get_geo_lookup_daily_count,
+    increment_geo_lookup_daily_count,
 )
 from parser import parse_xray_errors
 from apscheduler.schedulers.background import BackgroundScheduler
@@ -40,6 +43,8 @@ app = Flask(__name__)
 auth = HTTPBasicAuth()
 
 AUTH_ENABLED = os.getenv("AUTH_ENABLED", "true").strip().lower() in ("1", "true", "yes", "on")
+GEO_LOOKUP_ENABLED = os.getenv("GEO_LOOKUP_ENABLED", "true").strip().lower() in ("1", "true", "yes", "on")
+GEO_LOOKUP_DAILY_LIMIT = int(os.getenv("GEO_LOOKUP_DAILY_LIMIT", "1699"))
 
 USER_DATA = {
     os.getenv("DASHBOARD_USER"): os.getenv("DASHBOARD_PASS")
@@ -79,34 +84,65 @@ def update_logs_job():
     except Exception as e:
         log_message(f"КРИТИЧЕСКАЯ ОШИБКА в фоновом задании: {e}")
 
-def resolve_ip_location(ip):
-    """Возвращает строку вида 'Country, City' для публичного IP."""
-    if not ip or ip in ("Client", "N/A"):
-        return None
-    try:
-        ip_obj = ipaddress.ip_address(ip)
-        if ip_obj.is_private or ip_obj.is_loopback or ip_obj.is_link_local:
-            return "Private/Local"
-    except ValueError:
-        return None
+def resolve_ip_profile(ip):
+    """Возвращает профиль IP: location/owner/asn/network_type."""
+    if not ip or ip in ("Client", "N/A", "inbound/unknown", "api/internal"):
+        return {"location": None, "owner": None, "asn": None, "network_type": None}
 
-    cached = get_cached_ip_geo(ip)
+    ip_clean = str(ip).strip().strip("[]")
+    try:
+        ip_obj = ipaddress.ip_address(ip_clean)
+        if ip_obj.is_private or ip_obj.is_loopback or ip_obj.is_link_local:
+            return {
+                "location": "Private/Local",
+                "owner": "Private/Local Network",
+                "asn": None,
+                "network_type": "private"
+            }
+    except ValueError:
+        return {"location": None, "owner": None, "asn": None, "network_type": "not_ip"}
+
+    cached = get_cached_ip_profile(ip_clean)
     if cached:
-        country, city = cached
-        return ", ".join(part for part in [country, city] if part)
+        country, city, owner, asn, network_type = cached
+        return {
+            "location": ", ".join(part for part in [country, city] if part) or None,
+            "owner": owner,
+            "asn": asn,
+            "network_type": network_type
+        }
+
+    if not GEO_LOOKUP_ENABLED:
+        return {"location": None, "owner": None, "asn": None, "network_type": "disabled"}
+
+    day_key = datetime.now().strftime('%Y-%m-%d')
+    used_today = get_geo_lookup_daily_count(day_key)
+    if used_today >= GEO_LOOKUP_DAILY_LIMIT:
+        return {"location": None, "owner": None, "asn": None, "network_type": "rate_limited"}
+
+    increment_geo_lookup_daily_count(day_key)
 
     # Легкий публичный сервис без API-ключа; результат кэшируем в БД.
     try:
-        with urlopen(f"https://ipwho.is/{quote(ip)}", timeout=2.0) as response:
+        with urlopen(f"https://ipwho.is/{quote(ip_clean)}", timeout=2.0) as response:
             payload = json.loads(response.read().decode("utf-8"))
             if payload.get("success"):
                 country = payload.get("country") or ""
                 city = payload.get("city") or ""
-                upsert_ip_geo(ip, country, city)
-                return ", ".join(part for part in [country, city] if part) or "Unknown location"
+                conn = payload.get("connection", {}) or {}
+                owner = conn.get("org") or conn.get("isp") or "Unknown owner"
+                asn = str(conn.get("asn")) if conn.get("asn") else None
+                network_type = payload.get("type") or "public"
+                upsert_ip_profile(ip_clean, country, city, owner, asn, network_type)
+                return {
+                    "location": ", ".join(part for part in [country, city] if part) or "Unknown location",
+                    "owner": owner,
+                    "asn": asn,
+                    "network_type": network_type
+                }
     except Exception:
-        return None
-    return None
+        return {"location": None, "owner": None, "asn": None, "network_type": "unresolved"}
+    return {"location": None, "owner": None, "asn": None, "network_type": "unresolved"}
 
 @app.before_request
 def diagnose_unexpected_root_post():
@@ -170,7 +206,14 @@ def api_history():
         period = request.args.get('period', '7d')
         rows = get_history_records(500, period)
         for row in rows:
-            row["source_location"] = resolve_ip_location(row.get("source"))
+            source_profile = resolve_ip_profile(row.get("source"))
+            row["source_location"] = source_profile.get("location")
+            row["source_owner"] = source_profile.get("owner")
+            row["source_asn"] = source_profile.get("asn")
+
+            dest_profile = resolve_ip_profile(row.get("destination_host"))
+            row["destination_owner"] = dest_profile.get("owner")
+            row["destination_asn"] = dest_profile.get("asn")
         return jsonify(rows)
     except Exception as e:
         print(f"Unexpected Error fetching history: {e}") # Добавлено логирование для дебага
@@ -199,7 +242,14 @@ def api_error_type_events(error_type_id):
         period = request.args.get('period', '7d')
         rows = get_events_by_error_type(error_type_id, 200, period)
         for row in rows:
-            row["source_location"] = resolve_ip_location(row.get("source_ip"))
+            source_profile = resolve_ip_profile(row.get("source_ip"))
+            row["source_location"] = source_profile.get("location")
+            row["source_owner"] = source_profile.get("owner")
+            row["source_asn"] = source_profile.get("asn")
+
+            dest_profile = resolve_ip_profile(row.get("destination_host"))
+            row["destination_owner"] = dest_profile.get("owner")
+            row["destination_asn"] = dest_profile.get("asn")
         return jsonify(rows)
     except Exception as e:
         print(f"Error fetching events by type: {e}")

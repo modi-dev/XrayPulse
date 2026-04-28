@@ -74,7 +74,17 @@ def init_db():
                 ip TEXT PRIMARY KEY,
                 country TEXT,
                 city TEXT,
+                owner TEXT,
+                asn TEXT,
+                network_type TEXT,
                 updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+            )
+        ''')
+        _ensure_ip_geo_cache_columns(conn)
+        conn.execute('''
+            CREATE TABLE IF NOT EXISTS geo_lookup_daily_usage (
+                day TEXT PRIMARY KEY,
+                requests_count INTEGER NOT NULL DEFAULT 0
             )
         ''')
 
@@ -148,7 +158,9 @@ def get_history_records(limit=500, period='7d'):
                 t.id AS error_type_id,
                 t.normalized_text AS type,
                 t.description AS desc,
-                e.raw_message
+                e.raw_message,
+                e.destination_host,
+                e.destination_port
             FROM error_events e
             JOIN error_types t ON t.id = e.error_type_id
             WHERE datetime(replace(e.timestamp, '/', '-')) >= datetime(?)
@@ -234,22 +246,52 @@ def _period_to_since(period):
     delta = period_map.get(period, timedelta(days=7))
     return (datetime.now() - delta).strftime('%Y-%m-%d %H:%M:%S')
 
-def get_cached_ip_geo(ip):
+def get_cached_ip_profile(ip):
     with sqlite3.connect('xray_monitor.db') as conn:
         row = conn.execute(
-            'SELECT country, city FROM ip_geo_cache WHERE ip = ?',
+            'SELECT country, city, owner, asn, network_type FROM ip_geo_cache WHERE ip = ?',
             (ip,)
         ).fetchone()
         return row if row else None
 
-def upsert_ip_geo(ip, country, city):
+def upsert_ip_profile(ip, country, city, owner, asn, network_type):
     with sqlite3.connect('xray_monitor.db') as conn:
         conn.execute('''
-            INSERT INTO ip_geo_cache (ip, country, city, updated_at)
-            VALUES (?, ?, ?, CURRENT_TIMESTAMP)
+            INSERT INTO ip_geo_cache (ip, country, city, owner, asn, network_type, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
             ON CONFLICT(ip) DO UPDATE SET
                 country=excluded.country,
                 city=excluded.city,
+                owner=excluded.owner,
+                asn=excluded.asn,
+                network_type=excluded.network_type,
                 updated_at=CURRENT_TIMESTAMP
-        ''', (ip, country, city))
+        ''', (ip, country, city, owner, asn, network_type))
+        conn.commit()
+
+def _ensure_ip_geo_cache_columns(conn):
+    existing_columns = {row[1] for row in conn.execute("PRAGMA table_info(ip_geo_cache)").fetchall()}
+    if 'owner' not in existing_columns:
+        conn.execute("ALTER TABLE ip_geo_cache ADD COLUMN owner TEXT")
+    if 'asn' not in existing_columns:
+        conn.execute("ALTER TABLE ip_geo_cache ADD COLUMN asn TEXT")
+    if 'network_type' not in existing_columns:
+        conn.execute("ALTER TABLE ip_geo_cache ADD COLUMN network_type TEXT")
+
+def get_geo_lookup_daily_count(day):
+    with sqlite3.connect('xray_monitor.db') as conn:
+        row = conn.execute(
+            'SELECT requests_count FROM geo_lookup_daily_usage WHERE day = ?',
+            (day,)
+        ).fetchone()
+        return int(row[0]) if row else 0
+
+def increment_geo_lookup_daily_count(day):
+    with sqlite3.connect('xray_monitor.db') as conn:
+        conn.execute('''
+            INSERT INTO geo_lookup_daily_usage (day, requests_count)
+            VALUES (?, 1)
+            ON CONFLICT(day) DO UPDATE SET
+                requests_count = requests_count + 1
+        ''', (day,))
         conn.commit()
