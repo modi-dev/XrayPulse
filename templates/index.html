@@ -134,9 +134,14 @@
     <div id="errorDetailsBackdrop" class="hidden fixed inset-0 bg-black/55 z-40"></div>
     <aside id="errorTypeDetailsDrawer" class="fixed top-0 right-0 h-full w-full sm:w-[560px] bg-gray-900 border-l border-gray-700 shadow-2xl z-50 transform translate-x-full transition-transform duration-300 ease-out">
         <div class="h-full flex flex-col">
-            <div class="flex items-center justify-between px-5 py-4 border-b border-gray-700">
-                <h3 id="errorTypeDetailsTitle" class="text-lg font-semibold text-blue-400">Детализация по типу ошибки</h3>
-                <button onclick="closeErrorTypeDrawer()" class="text-gray-300 hover:text-white text-sm px-3 py-1 rounded border border-gray-600 hover:border-gray-400 transition">Закрыть</button>
+            <div class="px-5 py-4 border-b border-gray-700">
+                <div class="flex items-start justify-between gap-3">
+                    <div class="min-w-0">
+                        <div class="text-lg font-semibold text-blue-400 mb-1">Детализация по типу ошибки</div>
+                        <h3 id="errorTypeDetailsTitle" class="text-sm text-gray-300 leading-snug">Выберите ошибку из списка</h3>
+                    </div>
+                    <button onclick="closeErrorTypeDrawer()" class="text-gray-300 hover:text-white text-sm px-3 py-1 rounded border border-gray-600 hover:border-gray-400 transition">Закрыть</button>
+                </div>
             </div>
             <div id="errorTypeDetailsBody" class="text-base leading-relaxed text-gray-200 p-5 overflow-y-auto custom-scrollbar">
                 Выберите причину в блоке "Топ причин ошибок", чтобы увидеть события, IP и порты.
@@ -144,6 +149,6 @@
         </div>
     </aside>
 <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
-<script src="{{ url_for('static', filename='js/app.js') }}"></script>
+<script src="{{ url_for('static', filename='js/app.js', v='20260428-1900') }}"></script>
 </body>
 </html>

@@ -7,6 +7,11 @@ let refreshTimer = null;
 // Инстансы для Chart.js, чтобы их можно было уничтожать и пересоздавать при обновлении данных
 let mainChartInstance = null; 
 
+function getSelectedPeriod() {
+    const select = document.getElementById('periodFilter');
+    return select?.value || '7d';
+}
+
 /**
  * Утилиты: Группировка и подсчет инцидентов (для таблицы)
  */
@@ -45,21 +50,59 @@ function groupLogs(rawData) {
 function renderMainChart(data) {
     const canvas = document.getElementById('mainChart');
     if (!canvas) return;
-    
-    // Используем Map для агрегации: Ключ -> Количество инцидентов (по дате)
-    const timeMap = new Map(); 
-    
-    // !!! ИСПРАВЛЕНИЕ: Фильтруем данные, чтобы гарантировать наличие поля 'time' перед вызовом .split()
+
+    const selectedPeriod = getSelectedPeriod();
+    const periodToHours = {
+        '24h': 24,
+        '7d': 24 * 7,
+        '30d': 24 * 30
+    };
+
+    // Почасовая агрегация в зависимости от выбранного периода.
+    const hourlyMap = new Map();
+    const hoursBack = periodToHours[selectedPeriod] || 24 * 7;
+    const parseLogTime = (value) => {
+        if (!value || typeof value !== 'string') return null;
+        const m = value.match(/^(\d{4})[/-](\d{2})[/-](\d{2}) (\d{2}):(\d{2}):(\d{2})$/);
+        if (m) {
+            const [, y, mo, d, h, mi, s] = m;
+            return new Date(Number(y), Number(mo) - 1, Number(d), Number(h), Number(mi), Number(s));
+        }
+        const fallback = new Date(value.replace(/\//g, '-'));
+        return Number.isNaN(fallback.getTime()) ? null : fallback;
+    };
+
+    const parsedDates = data
+        .filter(item => item && typeof item.time === 'string')
+        .map(item => parseLogTime(item.time))
+        .filter(Boolean);
+    const now = parsedDates.length ? new Date(Math.max(...parsedDates.map(d => d.getTime()))) : new Date();
+
+    for (let i = hoursBack - 1; i >= 0; i--) {
+        const dt = new Date(now.getTime() - i * 60 * 60 * 1000);
+        const key = `${dt.getFullYear()}-${String(dt.getMonth() + 1).padStart(2, '0')}-${String(dt.getDate()).padStart(2, '0')} ${String(dt.getHours()).padStart(2, '0')}:00`;
+        hourlyMap.set(key, 0);
+    }
+
     data.filter(item => item && typeof item.time === 'string').forEach(item => {
-        const timestampKey = item.time.split(' ')[0]; // Теперь безопасно, т.к. мы отфильтровали null/undefined
-        if (timestampKey) {
-            let count = timeMap.get(timestampKey) || 0;
-            timeMap.set(timestampKey, count + 1);
+        const dt = parseLogTime(item.time);
+        if (!dt) return;
+        const key = `${dt.getFullYear()}-${String(dt.getMonth() + 1).padStart(2, '0')}-${String(dt.getDate()).padStart(2, '0')} ${String(dt.getHours()).padStart(2, '0')}:00`;
+        if (hourlyMap.has(key)) {
+            hourlyMap.set(key, (hourlyMap.get(key) || 0) + 1);
         }
     });
 
-    const labels = Array.from(timeMap.keys()).sort().slice(-7); 
-    const counts = labels.map(label => timeMap.get(label));
+    const labels = Array.from(hourlyMap.keys());
+    const counts = labels.map(label => hourlyMap.get(label));
+    const maxCount = counts.length ? Math.max(...counts) : 0;
+    const peakThreshold = maxCount > 0 ? Math.max(2, Math.ceil(maxCount * 0.7)) : 1;
+    const pointColors = counts.map(c => (c >= peakThreshold ? '#ef4444' : '#60a5fa'));
+    const formattedLabels = labels.map(label => {
+        const [datePart, hourPart] = label.split(' ');
+        const [, month, day] = datePart.split('-');
+        return `${day}.${month} ${hourPart}`;
+    });
 
     if (mainChartInstance) {
         mainChartInstance.destroy();
@@ -68,13 +111,23 @@ function renderMainChart(data) {
     mainChartInstance = new Chart(canvas.getContext('2d'), {
         type: 'bar',
         data: {
-            labels: labels,
+            labels: formattedLabels,
             datasets: [{
                 label: 'Количество инцидентов', 
                 data: counts,
                 backgroundColor: 'rgba(59, 130, 246, 0.7)', // blue-600/70%
                 borderColor: 'rgba(59, 130, 246, 1)',
-                borderWidth: 1
+                borderWidth: 1,
+                pointBackgroundColor: pointColors
+            }, {
+                label: 'Пики (>= 70% от max)',
+                type: 'line',
+                data: counts.map(v => (v >= peakThreshold ? v : null)),
+                borderColor: '#ef4444',
+                backgroundColor: '#ef4444',
+                pointRadius: 4,
+                pointHoverRadius: 6,
+                tension: 0.2
             }]
         },
         options: {
@@ -84,13 +137,30 @@ function renderMainChart(data) {
             scales: {
                 y: { 
                     grid: { color: '#374151' }, 
-                    ticks: { color: '#9CA3AF', stepSize: Math.ceil(Math.max(...counts) / 5) * 5 } // Умный шаг по Y
+                    beginAtZero: true,
+                    suggestedMax: Math.max(2, maxCount + 1),
+                    ticks: { color: '#9CA3AF' }
                 },
-                x: { grid: { display: false }, ticks: { color: '#9CA3AF' } }
+                x: {
+                    grid: { display: false },
+                    ticks: { color: '#9CA3AF', maxRotation: 45, minRotation: 45, autoSkip: true, maxTicksLimit: 12 }
+                }
             }, 
             plugins: {
                 legend: { display: true, position: 'top' },
-                title: { display: true, text: 'Тренды ошибок по времени (последние 7 дней)' }
+                title: { display: true, text: `Тренд по часам (${selectedPeriod})` },
+                tooltip: {
+                    callbacks: {
+                        title: (tooltipItems) => {
+                            const idx = tooltipItems?.[0]?.dataIndex ?? 0;
+                            return labels[idx];
+                        },
+                        afterLabel: (context) => {
+                            const value = context.parsed.y;
+                            return value >= peakThreshold ? 'Возможный всплеск' : 'Нормальный уровень';
+                        }
+                    }
+                }
             }
         }
     });
@@ -123,20 +193,22 @@ function renderTypeChart(data) {
 
     const rowsHtml = topTypes.map(([key, count], idx) => {
         const [typeId, errorType, description] = key.split('|');
+        const safeErrorType = JSON.stringify(errorType || '');
         return `
-            <button class="w-full text-left grid grid-cols-[40px_1fr_110px] gap-3 px-3 py-2 rounded hover:bg-gray-700/60 transition border border-gray-700"
-                onclick="showErrorTypeDetails(${Number(typeId)})"
+            <button class="w-full text-left grid grid-cols-[40px_minmax(220px,1fr)_minmax(320px,2fr)_110px] gap-3 px-3 py-2 rounded hover:bg-gray-700/60 transition border border-gray-700 items-start"
+                onclick='showErrorTypeDetails(${Number(typeId)}, ${safeErrorType})'
                 title="${errorType}">
                 <span class="text-xs text-gray-400">${idx + 1}</span>
-                <span class="text-sm text-gray-200 truncate">${errorType}<span class="text-gray-500"> — ${description}</span></span>
+                <span class="text-sm text-gray-300 whitespace-normal break-words leading-snug">${description}</span>
+                <span class="text-sm text-gray-100 whitespace-normal break-words leading-snug">${errorType}</span>
                 <span class="text-sm text-blue-300 font-mono text-right">${count}</span>
             </button>
         `;
     }).join('');
 
     container.innerHTML = `
-        <div class="grid grid-cols-[40px_1fr_110px] gap-3 px-3 pb-2 text-xs uppercase text-gray-400 border-b border-gray-700">
-            <span>#</span><span>Причина</span><span class="text-right">Кол-во</span>
+        <div class="grid grid-cols-[40px_minmax(220px,1fr)_minmax(320px,2fr)_110px] gap-3 px-3 pb-2 text-xs uppercase text-gray-400 border-b border-gray-700">
+            <span>#</span><span>Причина</span><span>Текст ошибки</span><span class="text-right">Кол-во</span>
         </div>
         <div class="mt-2 space-y-2">${rowsHtml}</div>
     `;
@@ -204,7 +276,10 @@ function renderTable(rawData) {
         // Используем Template literals для чистой вставки HTML
         row.innerHTML = `
             <td class="px-4 py-3 text-xs text-blue-300 font-mono">${group.time}</td>
-            <td class="px-4 py-3 text-xs text-green-400 font-mono">${group.source}</td>
+            <td class="px-4 py-3 text-xs text-green-400 font-mono">
+                <div class="whitespace-normal break-words">${group.source}</div>
+                ${group.source_location ? `<div class="text-[11px] text-gray-400 mt-1">${group.source_location}</div>` : ''}
+            </td>
             <td class="px-4 py-3 text-xs text-yellow-200 font-mono">${group.destination}</td>
             <td class="px-4 py-3 text-xs text-red-400 font-mono">
                 <div class="flex items-center w-full truncate max-w-[180px]">
@@ -262,17 +337,18 @@ window.closeErrorTypeDrawer = function() {
     backdrop.classList.add('hidden');
 };
 
-window.showErrorTypeDetails = async function(errorTypeId) {
+window.showErrorTypeDetails = async function(errorTypeId, errorTypeName = '') {
     const detailsTitle = document.getElementById('errorTypeDetailsTitle');
     const detailsBody = document.getElementById('errorTypeDetailsBody');
     if (!detailsBody || !detailsTitle) return;
 
     openErrorTypeDrawer();
-    detailsTitle.textContent = `Детализация по типу ошибки #${errorTypeId}`;
+    detailsTitle.textContent = errorTypeName || 'Тип ошибки';
     detailsBody.innerHTML = '<div class="text-gray-400">Загрузка...</div>';
 
     try {
-        const response = await fetch(`/api/error-types/${errorTypeId}/events`);
+        const period = getSelectedPeriod();
+        const response = await fetch(`/api/error-types/${errorTypeId}/events?period=${encodeURIComponent(period)}`);
         if (!response.ok) throw new Error(`Ошибка сервера: ${response.status}`);
         const events = await response.json();
         if (!events.length) {
@@ -280,17 +356,28 @@ window.showErrorTypeDetails = async function(errorTypeId) {
             return;
         }
 
-        detailsBody.innerHTML = events.map(evt => `
+        detailsBody.innerHTML = events.map((evt, idx) => `
             <div class="py-3 border-b border-gray-700 last:border-0">
-                <div class="text-sm text-blue-300 font-mono">${evt.timestamp || 'N/A'}</div>
-                <div class="text-sm text-gray-200 mt-1">Источник: ${evt.source_ip || 'N/A'}${evt.source_port ? ':' + evt.source_port : ''}</div>
-                <div class="text-sm text-gray-200">Назначение: ${evt.destination_host || 'N/A'}${evt.destination_port ? ':' + evt.destination_port : ''}</div>
-                <div class="text-sm text-gray-400 mt-2 break-words">${evt.raw_message || ''}</div>
+                <button class="w-full text-left" onclick="toggleRawMessage(${idx})">
+                    <div class="text-sm text-blue-300 font-mono">${evt.timestamp || 'N/A'}</div>
+                    <div class="text-sm text-gray-200 mt-1">Источник: ${evt.source_ip || 'N/A'}${evt.source_port ? ':' + evt.source_port : ''}</div>
+                    ${evt.source_location ? `<div class="text-sm text-gray-400">Локация: ${evt.source_location}</div>` : ''}
+                    <div class="text-sm text-gray-200">Назначение: ${evt.destination_host || 'N/A'}${evt.destination_port ? ':' + evt.destination_port : ''}</div>
+                    <div class="text-xs text-blue-400 mt-1">Показать исходное сообщение</div>
+                </button>
+                <div id="raw-msg-${idx}" class="hidden text-sm text-gray-400 mt-2 break-words bg-gray-800/70 rounded p-2 border border-gray-700">
+                    ${evt.raw_message || 'Нет исходного сообщения'}
+                </div>
             </div>
         `).join('');
     } catch (err) {
         detailsBody.innerHTML = `<div class="text-red-400">Ошибка загрузки деталей: ${err.message}</div>`;
     }
+};
+
+window.toggleRawMessage = function(index) {
+    const block = document.getElementById(`raw-msg-${index}`);
+    if (block) block.classList.toggle('hidden');
 };
 
 
@@ -301,7 +388,8 @@ async function loadData() {
     // --- Запрос данных с бэкенда ---
     try {
         console.time('API_FETCH');
-        const response = await fetch('/api/history');
+        const period = getSelectedPeriod();
+        const response = await fetch(`/api/history?period=${encodeURIComponent(period)}`);
         if (!response.ok) throw new Error(`Ошибка сервера: ${response.status}`);
         
         const data = await response.json();
@@ -338,6 +426,13 @@ function filterLogs(field) {
 
 document.addEventListener('DOMContentLoaded', () => {
     loadData(); // 1. Загрузка данных при старте страницы.
+    const periodSelect = document.getElementById('periodFilter');
+    if (periodSelect) {
+        periodSelect.addEventListener('change', () => {
+            closeErrorTypeDrawer();
+            loadData();
+        });
+    }
     const backdrop = document.getElementById('errorDetailsBackdrop');
     if (backdrop) {
         backdrop.addEventListener('click', closeErrorTypeDrawer);

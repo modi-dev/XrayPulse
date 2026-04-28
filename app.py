@@ -1,8 +1,12 @@
 import os
 import sqlite3
+import json
+import ipaddress
+from urllib.request import urlopen
+from urllib.parse import quote
 from functools import wraps
 from dotenv import load_dotenv
-from flask import Flask, jsonify, render_template
+from flask import Flask, jsonify, render_template, request
 from flask_httpauth import HTTPBasicAuth
 # Объединяем итоговый импорт из database
 from database import (
@@ -12,11 +16,14 @@ from database import (
     cleanup_old_logs,
     get_history_records,
     get_events_by_error_type,
+    get_cached_ip_geo,
+    upsert_ip_geo,
 )
 from parser import parse_xray_errors
 from apscheduler.schedulers.background import BackgroundScheduler
 
 LOG_FILE = "monitor_job.log" # Добавляем константу для файла логов
+POST_ROOT_DIAG = {}
 
 def log_message(message):
     """Простая функция логирования в файл и вывод в консоль."""
@@ -72,6 +79,61 @@ def update_logs_job():
     except Exception as e:
         log_message(f"КРИТИЧЕСКАЯ ОШИБКА в фоновом задании: {e}")
 
+def resolve_ip_location(ip):
+    """Возвращает строку вида 'Country, City' для публичного IP."""
+    if not ip or ip in ("Client", "N/A"):
+        return None
+    try:
+        ip_obj = ipaddress.ip_address(ip)
+        if ip_obj.is_private or ip_obj.is_loopback or ip_obj.is_link_local:
+            return "Private/Local"
+    except ValueError:
+        return None
+
+    cached = get_cached_ip_geo(ip)
+    if cached:
+        country, city = cached
+        return ", ".join(part for part in [country, city] if part)
+
+    # Легкий публичный сервис без API-ключа; результат кэшируем в БД.
+    try:
+        with urlopen(f"https://ipwho.is/{quote(ip)}", timeout=2.0) as response:
+            payload = json.loads(response.read().decode("utf-8"))
+            if payload.get("success"):
+                country = payload.get("country") or ""
+                city = payload.get("city") or ""
+                upsert_ip_geo(ip, country, city)
+                return ", ".join(part for part in [country, city] if part) or "Unknown location"
+    except Exception:
+        return None
+    return None
+
+@app.before_request
+def diagnose_unexpected_root_post():
+    """Диагностика источника POST-запросов в корень '/'."""
+    if request.path != '/' or request.method != 'POST':
+        return
+
+    # Ключ для анти-спама: ip + user-agent
+    client_ip = request.headers.get('X-Forwarded-For', request.remote_addr or 'unknown')
+    ua = request.headers.get('User-Agent', 'unknown')
+    key = f"{client_ip}|{ua}"
+
+    import time
+    now_ts = int(time.time())
+    last = POST_ROOT_DIAG.get(key, 0)
+
+    # Логируем не чаще раза в 30 секунд на источник
+    if now_ts - last >= 30:
+        POST_ROOT_DIAG[key] = now_ts
+        origin = request.headers.get('Origin', '-')
+        referer = request.headers.get('Referer', '-')
+        content_type = request.headers.get('Content-Type', '-')
+        log_message(
+            "DIAG POST / "
+            f"ip={client_ip} ua={ua} origin={origin} referer={referer} content_type={content_type}"
+        )
+
 # Запускаем планировщик
 scheduler = BackgroundScheduler()
 scheduler.add_job(func=update_logs_job, trigger="interval", seconds=30)
@@ -105,7 +167,11 @@ def api_recent():
 @auth_required
 def api_history():
     try:
-        return jsonify(get_history_records(500))
+        period = request.args.get('period', '7d')
+        rows = get_history_records(500, period)
+        for row in rows:
+            row["source_location"] = resolve_ip_location(row.get("source"))
+        return jsonify(rows)
     except Exception as e:
         print(f"Unexpected Error fetching history: {e}") # Добавлено логирование для дебага
         return jsonify({"error": f"An unexpected error occurred: {str(e)}", "details": "Обратитесь к администратору."}), 500
@@ -114,7 +180,8 @@ def api_history():
 @auth_required
 def api_error_types():
     try:
-        rows = get_aggregated_history()
+        period = request.args.get('period', '7d')
+        rows = get_aggregated_history(period)
         return jsonify([{
             "id": row[0],
             "error_type": row[1],
@@ -129,7 +196,11 @@ def api_error_types():
 @auth_required
 def api_error_type_events(error_type_id):
     try:
-        return jsonify(get_events_by_error_type(error_type_id, 200))
+        period = request.args.get('period', '7d')
+        rows = get_events_by_error_type(error_type_id, 200, period)
+        for row in rows:
+            row["source_location"] = resolve_ip_location(row.get("source_ip"))
+        return jsonify(rows)
     except Exception as e:
         print(f"Error fetching events by type: {e}")
         return jsonify({"error": str(e)}), 500

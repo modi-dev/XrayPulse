@@ -68,6 +68,16 @@ def init_db():
         conn.execute('CREATE INDEX IF NOT EXISTS idx_events_timestamp ON error_events(timestamp DESC)')
         conn.execute('CREATE INDEX IF NOT EXISTS idx_events_error_type_id ON error_events(error_type_id)')
 
+        # Кэш геолокации IP, чтобы не бить внешний сервис повторно.
+        conn.execute('''
+            CREATE TABLE IF NOT EXISTS ip_geo_cache (
+                ip TEXT PRIMARY KEY,
+                country TEXT,
+                city TEXT,
+                updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+            )
+        ''')
+
         _migrate_legacy_data(conn)
         conn.commit()
 
@@ -108,25 +118,28 @@ def get_latest_logs(limit=30):
         ''', (limit,))
         return cursor.fetchall()
 
-def get_aggregated_history():
+def get_aggregated_history(period='7d'):
+    since = _period_to_since(period)
     with sqlite3.connect('xray_monitor.db') as conn:
         cursor = conn.cursor()
         cursor.execute('''
             SELECT t.id, t.normalized_text, t.description, COUNT(*) as total
             FROM error_events e
             JOIN error_types t ON t.id = e.error_type_id
+            WHERE datetime(replace(e.timestamp, '/', '-')) >= datetime(?)
             GROUP BY t.id, t.normalized_text, t.description
             ORDER BY total DESC
-        ''')
+        ''', (since,))
         return cursor.fetchall()
 
-def get_history_records(limit=500):
+def get_history_records(limit=500, period='7d'):
+    since = _period_to_since(period)
     with sqlite3.connect('xray_monitor.db') as conn:
         conn.row_factory = sqlite3.Row
         cursor = conn.cursor()
         cursor.execute('''
             SELECT
-                e.timestamp,
+                e.timestamp AS time,
                 COALESCE(e.source_ip, 'Client') AS source,
                 CASE
                     WHEN e.destination_port IS NOT NULL THEN e.destination_host || ':' || e.destination_port
@@ -138,12 +151,14 @@ def get_history_records(limit=500):
                 e.raw_message
             FROM error_events e
             JOIN error_types t ON t.id = e.error_type_id
+            WHERE datetime(replace(e.timestamp, '/', '-')) >= datetime(?)
             ORDER BY e.timestamp DESC
             LIMIT ?
-        ''', (limit,))
+        ''', (since, limit))
         return [dict(row) for row in cursor.fetchall()]
 
-def get_events_by_error_type(error_type_id, limit=200):
+def get_events_by_error_type(error_type_id, limit=200, period='7d'):
+    since = _period_to_since(period)
     with sqlite3.connect('xray_monitor.db') as conn:
         conn.row_factory = sqlite3.Row
         cursor = conn.cursor()
@@ -160,9 +175,10 @@ def get_events_by_error_type(error_type_id, limit=200):
             FROM error_events e
             JOIN error_types t ON t.id = e.error_type_id
             WHERE e.error_type_id = ?
+              AND datetime(replace(e.timestamp, '/', '-')) >= datetime(?)
             ORDER BY e.timestamp DESC
             LIMIT ?
-        ''', (error_type_id, limit))
+        ''', (error_type_id, since, limit))
         return [dict(row) for row in cursor.fetchall()]
 
 def cleanup_old_logs(days=7):
@@ -208,3 +224,32 @@ def _migrate_legacy_data(conn):
                 timestamp, source_ip, source_port, destination_host, destination_port, raw_message, error_type_id
             ) VALUES (?, ?, ?, ?, ?, ?, ?)
         ''', (ts, source, None, dest_host, dest_port, error_type or '', et_id))
+
+def _period_to_since(period):
+    period_map = {
+        '24h': timedelta(hours=24),
+        '7d': timedelta(days=7),
+        '30d': timedelta(days=30),
+    }
+    delta = period_map.get(period, timedelta(days=7))
+    return (datetime.now() - delta).strftime('%Y-%m-%d %H:%M:%S')
+
+def get_cached_ip_geo(ip):
+    with sqlite3.connect('xray_monitor.db') as conn:
+        row = conn.execute(
+            'SELECT country, city FROM ip_geo_cache WHERE ip = ?',
+            (ip,)
+        ).fetchone()
+        return row if row else None
+
+def upsert_ip_geo(ip, country, city):
+    with sqlite3.connect('xray_monitor.db') as conn:
+        conn.execute('''
+            INSERT INTO ip_geo_cache (ip, country, city, updated_at)
+            VALUES (?, ?, ?, CURRENT_TIMESTAMP)
+            ON CONFLICT(ip) DO UPDATE SET
+                country=excluded.country,
+                city=excluded.city,
+                updated_at=CURRENT_TIMESTAMP
+        ''', (ip, country, city))
+        conn.commit()
