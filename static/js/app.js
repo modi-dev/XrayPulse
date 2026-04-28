@@ -298,9 +298,60 @@ function filterLogs(field) {
 }
 
 
-/**
- * Главный контроллер (инициализация при загрузке DOM)
- */
+
+// Главный контроллер (инициализация при загрузке DOM)
+function renderTypeChart(data) {
+    const typeCounts = new Map();
+    let criticalCount = 0;
+
+    data.filter(item => item && typeof item.type === 'string').forEach(item => {
+        const key = `${item.type}|${item.desc}`;  // Используйте описание для более детального анализа причин
+        if (!typeCounts.has(key)) {
+            typeCounts.set(key, 0);
+        }
+        typeCounts.set(key, typeCounts.get(key) + 1);
+    });
+
+    const sortedTypes = Array.from(typeCounts.entries()).sort((a, b) => b[1] - a[1]);
+    const topFive = sortedTypes.slice(0, 5); // Измените на N для других значений
+
+    const labels = topFive.map(([key]) => {
+        return key.split('|')[0].replace(/([A-Z])/g, ' $1').trim().substring(0, 25).toUpperCase();
+    });
+    const counts = topFive.map(([, count]) => count);
+
+    if (typeChartInstance) {
+        typeChartInstance.destroy();
+    }
+
+    // Используйте горизонтальную столбчатую диаграмму вместо круговой
+    typeChartInstance = new Chart(document.getElementById('typeChart').getContext('2d'), {
+        type: 'bar',
+        data: {
+            labels: labels,  // Ошибки по оси Y
+            datasets: [{
+                label: 'Количество',  // Подпись для оси X
+                data: counts,  // Количество каждой ошибки
+                backgroundColor: Array(counts.length).fill('#3b82f6'),  // Цвет столбцов (можете выбрать другой)
+                borderWidth: 1
+            }]
+        },
+        options: {
+            indexAxis: 'y',  // Индекс по оси Y
+             responsive: true,
+            maintainAspectRatio: false,
+            scales: {
+                x: { grid: { display: false }, ticks: { color: '#9CA3AF' } },
+                y: { grid: { display: false }, ticks: { color: '#9CA3AF' } }
+            },
+            plugins: {
+                legend: { display: false },
+                title: { display: true, text: 'Топ N причин ошибок' }
+            }
+        }
+    });
+}
+
 document.addEventListener('DOMContentLoaded', () => {
     loadData(); // 1. Загрузка данных при старте страницы.
 
