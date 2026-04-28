@@ -246,11 +246,28 @@ window.toggleDetails = function(index) {
     if (el) el.classList.toggle('hidden');
 };
 
+window.openErrorTypeDrawer = function() {
+    const drawer = document.getElementById('errorTypeDetailsDrawer');
+    const backdrop = document.getElementById('errorDetailsBackdrop');
+    if (!drawer || !backdrop) return;
+    backdrop.classList.remove('hidden');
+    drawer.classList.remove('translate-x-full');
+};
+
+window.closeErrorTypeDrawer = function() {
+    const drawer = document.getElementById('errorTypeDetailsDrawer');
+    const backdrop = document.getElementById('errorDetailsBackdrop');
+    if (!drawer || !backdrop) return;
+    drawer.classList.add('translate-x-full');
+    backdrop.classList.add('hidden');
+};
+
 window.showErrorTypeDetails = async function(errorTypeId) {
     const detailsTitle = document.getElementById('errorTypeDetailsTitle');
     const detailsBody = document.getElementById('errorTypeDetailsBody');
     if (!detailsBody || !detailsTitle) return;
 
+    openErrorTypeDrawer();
     detailsTitle.textContent = `Детализация по типу ошибки #${errorTypeId}`;
     detailsBody.innerHTML = '<div class="text-gray-400">Загрузка...</div>';
 
@@ -264,11 +281,11 @@ window.showErrorTypeDetails = async function(errorTypeId) {
         }
 
         detailsBody.innerHTML = events.map(evt => `
-            <div class="py-2 border-b border-gray-700 last:border-0">
-                <div class="text-xs text-blue-300 font-mono">${evt.timestamp || 'N/A'}</div>
-                <div class="text-xs text-gray-300">Источник: ${evt.source_ip || 'N/A'}${evt.source_port ? ':' + evt.source_port : ''}</div>
-                <div class="text-xs text-gray-300">Назначение: ${evt.destination_host || 'N/A'}${evt.destination_port ? ':' + evt.destination_port : ''}</div>
-                <div class="text-xs text-gray-500 mt-1">${evt.raw_message || ''}</div>
+            <div class="py-3 border-b border-gray-700 last:border-0">
+                <div class="text-sm text-blue-300 font-mono">${evt.timestamp || 'N/A'}</div>
+                <div class="text-sm text-gray-200 mt-1">Источник: ${evt.source_ip || 'N/A'}${evt.source_port ? ':' + evt.source_port : ''}</div>
+                <div class="text-sm text-gray-200">Назначение: ${evt.destination_host || 'N/A'}${evt.destination_port ? ':' + evt.destination_port : ''}</div>
+                <div class="text-sm text-gray-400 mt-2 break-words">${evt.raw_message || ''}</div>
             </div>
         `).join('');
     } catch (err) {
@@ -321,6 +338,15 @@ function filterLogs(field) {
 
 document.addEventListener('DOMContentLoaded', () => {
     loadData(); // 1. Загрузка данных при старте страницы.
+    const backdrop = document.getElementById('errorDetailsBackdrop');
+    if (backdrop) {
+        backdrop.addEventListener('click', closeErrorTypeDrawer);
+    }
+    document.addEventListener('keydown', (e) => {
+        if (e.key === 'Escape') {
+            closeErrorTypeDrawer();
+        }
+    });
 
     const select = document.getElementById('refreshInterval');
     let refreshTimer = null;
