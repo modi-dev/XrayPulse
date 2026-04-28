@@ -1,7 +1,8 @@
+import os
 import re
 import ipaddress
 
-ERROR_LOG_PATH = './error.log'
+ERROR_LOG_PATH = os.getenv('ERROR_LOG_PATH', '/usr/local/x-ui/error.log')
 
 def split_host_port(endpoint):
     """Разбирает endpoint вида host:port или [ipv6]:port."""
