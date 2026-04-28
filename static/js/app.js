@@ -6,7 +6,6 @@
 let refreshTimer = null;
 // Инстансы для Chart.js, чтобы их можно было уничтожать и пересоздавать при обновлении данных
 let mainChartInstance = null; 
-let typeChartInstance = null; 
 
 /**
  * Утилиты: Группировка и подсчет инцидентов (для таблицы)
@@ -98,58 +97,49 @@ function renderMainChart(data) {
 }
 
 /**
- * 2. График Распределения Типов (Doughnut Chart)
+ * 2. Таблица топа причин (Причина | Количество)
  */
 function renderTypeChart(data) {
+    const container = document.getElementById('typeSummary');
+    if (!container) return;
+
     const typeCounts = new Map();
-    let criticalCount = 0;
-    let totalSources = new Set();
 
     data.filter(item => item && typeof item.type === 'string').forEach(item => {
-        const key = `${item.type}|${item.desc}`; 
+        const key = `${item.error_type_id || 0}|${item.type || 'UNKNOWN'}|${item.desc || 'Нет описания'}`;
         if (!typeCounts.has(key)) {
             typeCounts.set(key, 0);
         }
         typeCounts.set(key, typeCounts.get(key) + 1);
-        totalSources.add(item.source);
-        // Эвристика определения критичности для целей демонстрации
-        if (item.type && item.type.toUpperCase().includes('FATAL') || item.type.toUpperCase().includes('CRITICAL')) {
-            criticalCount++;
-        }
     });
-    
+
     const sortedTypes = Array.from(typeCounts.entries()).sort((a, b) => b[1] - a[1]);
-    const topFive = sortedTypes.slice(0, 5);
+    const topTypes = sortedTypes.slice(0, 8);
 
-    const labels = topFive.map(([key]) => {
-        return key.split('|')[0].replace(/([A-Z])/g, ' $1').trim().substring(0, 25).toUpperCase();
-    });
-    const counts = topFive.map(([, count]) => count);
-
-    if (typeChartInstance) {
-        typeChartInstance.destroy();
+    if (!topTypes.length) {
+        container.innerHTML = '<div class="text-gray-400">Нет данных по ошибкам.</div>';
+        return;
     }
 
-    typeChartInstance = new Chart(document.getElementById('typeChart').getContext('2d'), {
-        type: 'doughnut',
-        data: {
-            labels: labels,
-            datasets: [{
-                label: 'Частота ошибок', 
-                data: counts,
-                backgroundColor: ['#3b82f6', '#ef4444', '#f59e0b', '#10b986', '#60a5fa'], // Палитра Tailwind
-                hoverOffset: 8
-            }]
-        },
-        options: {
-            responsive: true,
-            maintainAspectRatio: false,
-            plugins: {
-                legend: { display: true, position: 'right' },
-                title: { display: false }
-            }
-        }
-    });
+    const rowsHtml = topTypes.map(([key, count], idx) => {
+        const [typeId, errorType, description] = key.split('|');
+        return `
+            <button class="w-full text-left grid grid-cols-[40px_1fr_110px] gap-3 px-3 py-2 rounded hover:bg-gray-700/60 transition border border-gray-700"
+                onclick="showErrorTypeDetails(${Number(typeId)})"
+                title="${errorType}">
+                <span class="text-xs text-gray-400">${idx + 1}</span>
+                <span class="text-sm text-gray-200 truncate">${errorType}<span class="text-gray-500"> — ${description}</span></span>
+                <span class="text-sm text-blue-300 font-mono text-right">${count}</span>
+            </button>
+        `;
+    }).join('');
+
+    container.innerHTML = `
+        <div class="grid grid-cols-[40px_1fr_110px] gap-3 px-3 pb-2 text-xs uppercase text-gray-400 border-b border-gray-700">
+            <span>#</span><span>Причина</span><span class="text-right">Кол-во</span>
+        </div>
+        <div class="mt-2 space-y-2">${rowsHtml}</div>
+    `;
 }
 
 
@@ -256,6 +246,36 @@ window.toggleDetails = function(index) {
     if (el) el.classList.toggle('hidden');
 };
 
+window.showErrorTypeDetails = async function(errorTypeId) {
+    const detailsTitle = document.getElementById('errorTypeDetailsTitle');
+    const detailsBody = document.getElementById('errorTypeDetailsBody');
+    if (!detailsBody || !detailsTitle) return;
+
+    detailsTitle.textContent = `Детализация по типу ошибки #${errorTypeId}`;
+    detailsBody.innerHTML = '<div class="text-gray-400">Загрузка...</div>';
+
+    try {
+        const response = await fetch(`/api/error-types/${errorTypeId}/events`);
+        if (!response.ok) throw new Error(`Ошибка сервера: ${response.status}`);
+        const events = await response.json();
+        if (!events.length) {
+            detailsBody.innerHTML = '<div class="text-gray-400">Для этого типа ошибок нет событий.</div>';
+            return;
+        }
+
+        detailsBody.innerHTML = events.map(evt => `
+            <div class="py-2 border-b border-gray-700 last:border-0">
+                <div class="text-xs text-blue-300 font-mono">${evt.timestamp || 'N/A'}</div>
+                <div class="text-xs text-gray-300">Источник: ${evt.source_ip || 'N/A'}${evt.source_port ? ':' + evt.source_port : ''}</div>
+                <div class="text-xs text-gray-300">Назначение: ${evt.destination_host || 'N/A'}${evt.destination_port ? ':' + evt.destination_port : ''}</div>
+                <div class="text-xs text-gray-500 mt-1">${evt.raw_message || ''}</div>
+            </div>
+        `).join('');
+    } catch (err) {
+        detailsBody.innerHTML = `<div class="text-red-400">Ошибка загрузки деталей: ${err.message}</div>`;
+    }
+};
+
 
 /**
  * 5. Основная асинхронная функция загрузки данных (CORE LOGIC)
@@ -277,7 +297,7 @@ async function loadData() {
         // --- ОБНОВЛЕНИЕ UI (ПОРЯДОК ВАЖЕН!) ---
         updateKpiCards(data); // 1. KPI - сначала сводка
         renderMainChart(data);   // 2. График трендов
-        renderTypeChart(data);    // 3. График причин
+        renderTypeChart(data);    // 3. Топ причин с количеством
         renderTable(data);      // 4. Таблица логов (самый объемный элемент)
 
     } catch (err) {
@@ -298,59 +318,6 @@ function filterLogs(field) {
 }
 
 
-
-// Главный контроллер (инициализация при загрузке DOM)
-function renderTypeChart(data) {
-    const typeCounts = new Map();
-    let criticalCount = 0;
-
-    data.filter(item => item && typeof item.type === 'string').forEach(item => {
-        const key = `${item.type}|${item.desc}`;  // Используйте описание для более детального анализа причин
-        if (!typeCounts.has(key)) {
-            typeCounts.set(key, 0);
-        }
-        typeCounts.set(key, typeCounts.get(key) + 1);
-    });
-
-    const sortedTypes = Array.from(typeCounts.entries()).sort((a, b) => b[1] - a[1]);
-    const topFive = sortedTypes.slice(0, 5); // Измените на N для других значений
-
-    const labels = topFive.map(([key]) => {
-        return key.split('|')[0].replace(/([A-Z])/g, ' $1').trim().substring(0, 25).toUpperCase();
-    });
-    const counts = topFive.map(([, count]) => count);
-
-    if (typeChartInstance) {
-        typeChartInstance.destroy();
-    }
-
-    // Используйте горизонтальную столбчатую диаграмму вместо круговой
-    typeChartInstance = new Chart(document.getElementById('typeChart').getContext('2d'), {
-        type: 'bar',
-        data: {
-            labels: labels,  // Ошибки по оси Y
-            datasets: [{
-                label: 'Количество',  // Подпись для оси X
-                data: counts,  // Количество каждой ошибки
-                backgroundColor: Array(counts.length).fill('#3b82f6'),  // Цвет столбцов (можете выбрать другой)
-                borderWidth: 1
-            }]
-        },
-        options: {
-            indexAxis: 'y',  // Индекс по оси Y
-             responsive: true,
-            maintainAspectRatio: false,
-            scales: {
-                x: { grid: { display: false }, ticks: { color: '#9CA3AF' } },
-                y: { grid: { display: false }, ticks: { color: '#9CA3AF' } }
-            },
-            plugins: {
-                legend: { display: false },
-                title: { display: true, text: 'Топ N причин ошибок' }
-            }
-        }
-    });
-}
 
 document.addEventListener('DOMContentLoaded', () => {
     loadData(); // 1. Загрузка данных при старте страницы.

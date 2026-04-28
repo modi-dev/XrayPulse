@@ -82,53 +82,62 @@
         </div>
         <!-- END: KPI Dashboard Cards -->
 
-        <!-- START: Графики (Тренды и Причины) -->
-        <div class="grid grid-cols-1 lg:grid-cols-2 gap-6 mb-10">
-            <!-- График 1: Тренды ошибок по времени -->
-            <div class="bg-gray-800 p-6 rounded-xl border border-gray-700 shadow-xl h-[350px]">
-                <h3 class="text-lg font-semibold text-blue-400 mb-4">Трендовый анализ (Количество ошибок по времени)</h3>
-                <!-- Увеличиваем высоту, чтобы было видно данные -->
-                <canvas id="mainChart" height="350"></canvas>
+        <div class="grid grid-cols-1 md:grid-cols-[minmax(0,1fr)_320px] gap-6 items-start">
+            <div>
+                <!-- START: Графики -->
+                <div class="mb-6">
+                    <div class="bg-gray-800 p-6 rounded-xl border border-gray-700 shadow-xl">
+                        <h3 class="text-lg font-semibold text-blue-400 mb-4">Топ причин ошибок (Причина и количество)</h3>
+                        <div id="typeSummary" class="space-y-2"></div>
+                    </div>
+                </div>
+
+                <div class="mb-10">
+                    <div class="bg-gray-800 p-6 rounded-xl border border-gray-700 shadow-xl h-[350px]">
+                        <h3 class="text-lg font-semibold text-blue-400 mb-4">Трендовый анализ (Количество ошибок по времени)</h3>
+                        <canvas id="mainChart" height="350"></canvas>
+                    </div>
+                </div>
+                <!-- END: Графики -->
+
+                <!-- Historical Log Table (Таблица логов) -->
+                <h3 class="text-2xl font-semibold text-blue-400 mt-8 mb-4 border-b pb-2">
+                    История событий и подробный поиск
+                </h3>
+                <div class="bg-gray-800 rounded-xl border border-gray-700 overflow-hidden shadow-xl">
+                    <table class="w-full text-left">
+                        <!-- Header: Добавлено hover для интерактивности -->
+                        <thead class="text-xs text-gray-400 uppercase bg-gray-800 sticky top-0">
+                            <tr class="cursor-pointer hover:bg-gray-700 transition" onclick="filterLogs('time')">
+                                <th class="px-4 py-3 w-1/6">Время</th>
+                            </tr>
+                             <!-- Увеличиваем ширины колонок для лучшего отображения -->
+                            <tr class="cursor-pointer hover:bg-gray-700 transition" onclick="filterLogs('source')">
+                                <th class="px-4 py-3 w-1/6">Источник (Source)</th>
+                            </tr>
+                            <tr class="cursor-pointer hover:bg-gray-700 transition" onclick="filterLogs('target')">
+                                <th class="px-4 py-3 w-1/6">Цель (Target)</th>
+                            </tr>
+                            <tr class="cursor-pointer hover:bg-gray-700 transition" onclick="filterLogs('type')">
+                                <th class="px-4 py-3 w-1/6">Ошибка</th>
+                            </tr>
+                            <tr class="cursor-pointer hover:bg-gray-700 transition" onclick="filterLogs('description')">
+                                <th class="px-4 py-3 w-2/6">Описание</th>
+                            </tr>
+                        </thead>
+                        <tbody id="tableBody">
+                            <!-- Здесь будет заполнение JavaScript -->
+                        </tbody>
+                    </table>
+                </div>
             </div>
 
-            <!-- График 2: Распределение типов ошибок -->
-            <div class="bg-gray-800 p-6 rounded-xl border border-gray-700 shadow-xl h-[350px]">
-                <h3 class="text-lg font-semibold text-blue-400 mb-4">Топ N причин ошибок (Распределение)</h3>
-            <!-- Увеличиваем высоту, чтобы было видно данные -->
-                <canvas id="typeChart" height="350" data-bs-toggle="tooltip" data-bs-placement="top" title="Описание типа ошибки"></canvas>
+            <div id="errorTypeDetails" class="bg-gray-800 p-5 rounded-xl border border-gray-700 shadow-xl md:sticky md:top-6">
+                <h3 id="errorTypeDetailsTitle" class="text-base font-semibold text-blue-400 mb-3">Детализация по типу ошибки</h3>
+                <div id="errorTypeDetailsBody" class="text-sm text-gray-300 h-[70vh] overflow-y-auto custom-scrollbar">
+                    Выберите причину в блоке "Топ причин ошибок", чтобы увидеть события, IP и порты.
+                </div>
             </div>
-        </div>
-        <!-- END: Графики -->
-
-        <!-- Historical Log Table (Таблица логов) -->
-        <h3 class="text-2xl font-semibold text-blue-400 mt-8 mb-4 border-b pb-2">
-            История событий и подробный поиск
-        </h3>
-        <div class="bg-gray-800 rounded-xl border border-gray-700 overflow-hidden shadow-xl">
-            <table class="w-full text-left">
-                <!-- Header: Добавлено hover для интерактивности -->
-                <thead class="text-xs text-gray-400 uppercase bg-gray-800 sticky top-0">
-                    <tr class="cursor-pointer hover:bg-gray-700 transition" onclick="filterLogs('time')">
-                        <th class="px-4 py-3 w-1/6">Время</th>
-                    </tr>
-                     <!-- Увеличиваем ширины колонок для лучшего отображения -->
-                    <tr class="cursor-pointer hover:bg-gray-700 transition" onclick="filterLogs('source')">
-                        <th class="px-4 py-3 w-1/6">Источник (Source)</th>
-                    </tr>
-                    <tr class="cursor-pointer hover:bg-gray-700 transition" onclick="filterLogs('target')">
-                        <th class="px-4 py-3 w-1/6">Цель (Target)</th>
-                    </tr>
-                    <tr class="cursor-pointer hover:bg-gray-700 transition" onclick="filterLogs('type')">
-                        <th class="px-4 py-3 w-1/6">Ошибка</th>
-                    </tr>
-                    <tr class="cursor-pointer hover:bg-gray-700 transition" onclick="filterLogs('description')">
-                        <th class="px-4 py-3 w-2/6">Описание</th>
-                    </tr>
-                </thead>
-                <tbody id="tableBody">
-                    <!-- Здесь будет заполнение JavaScript -->
-                </tbody>
-            </table>
         </div>
     </div>
 <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>

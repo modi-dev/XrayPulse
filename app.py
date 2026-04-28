@@ -1,10 +1,18 @@
 import os
 import sqlite3
+from functools import wraps
 from dotenv import load_dotenv
 from flask import Flask, jsonify, render_template
 from flask_httpauth import HTTPBasicAuth
 # Объединяем итоговый импорт из database
-from database import init_db, save_errors, get_aggregated_history, cleanup_old_logs
+from database import (
+    init_db,
+    save_errors,
+    get_aggregated_history,
+    cleanup_old_logs,
+    get_history_records,
+    get_events_by_error_type,
+)
 from parser import parse_xray_errors
 from apscheduler.schedulers.background import BackgroundScheduler
 
@@ -24,13 +32,26 @@ load_dotenv()
 app = Flask(__name__)
 auth = HTTPBasicAuth()
 
+AUTH_ENABLED = os.getenv("AUTH_ENABLED", "true").strip().lower() in ("1", "true", "yes", "on")
+
 USER_DATA = {
     os.getenv("DASHBOARD_USER"): os.getenv("DASHBOARD_PASS")
 }
 
+def auth_required(func):
+    """Условно включает проверку auth через AUTH_ENABLED."""
+    if not AUTH_ENABLED:
+        @wraps(func)
+        def wrapped(*args, **kwargs):
+            return func(*args, **kwargs)
+        return wrapped
+    return auth.login_required(func)
+
 
 @auth.verify_password
 def verify_password(username, password):
+    if not AUTH_ENABLED:
+        return username
     if username in USER_DATA and USER_DATA.get(username) == password:
         return username
 
@@ -57,12 +78,12 @@ scheduler.add_job(func=update_logs_job, trigger="interval", seconds=30)
 scheduler.start()
 
 @app.route('/')
-@auth.login_required
+@auth_required
 def index():
     return render_template('index.html')
 
 @app.route('/api/update')
-@auth.login_required
+@auth_required
 def update_stats():
     current_stats = parse_xray_errors()
     if current_stats:
@@ -70,7 +91,7 @@ def update_stats():
     return jsonify({"status": "success"})
 
 @app.route('/api/recent')
-@auth.login_required
+@auth_required
 def api_recent():
     from database import get_latest_logs
     data = get_latest_logs(30) # Последние 30 событий
@@ -81,27 +102,37 @@ def api_recent():
     } for r in data])
 
 @app.route('/api/history')
-@auth.login_required
+@auth_required
 def api_history():
     try:
-        with sqlite3.connect('xray_monitor.db') as conn:
-            conn.row_factory = sqlite3.Row
-            cursor = conn.cursor()
-            # Берем последние 500 записей без группировки
-            cursor.execute('''
-                SELECT timestamp, source, destination, error_type as type, description as desc
-                FROM error_history
-                ORDER BY timestamp DESC
-                LIMIT 500
-            ''')
-            rows = cursor.fetchall()
-            return jsonify([dict(row) for row in rows])
-    except sqlite3.Error as e:
-        print(f"SQLite Error fetching history: {e}") # Добавлено логирование для дебага
-        return jsonify({"error": f"Database query failed: {str(e)}", "details": "Проверьте подключение к БД или схему таблицы."}), 500
+        return jsonify(get_history_records(500))
     except Exception as e:
         print(f"Unexpected Error fetching history: {e}") # Добавлено логирование для дебага
         return jsonify({"error": f"An unexpected error occurred: {str(e)}", "details": "Обратитесь к администратору."}), 500
+
+@app.route('/api/error-types')
+@auth_required
+def api_error_types():
+    try:
+        rows = get_aggregated_history()
+        return jsonify([{
+            "id": row[0],
+            "error_type": row[1],
+            "description": row[2],
+            "count": row[3]
+        } for row in rows])
+    except Exception as e:
+        print(f"Error fetching error types: {e}")
+        return jsonify({"error": str(e)}), 500
+
+@app.route('/api/error-types/<int:error_type_id>/events')
+@auth_required
+def api_error_type_events(error_type_id):
+    try:
+        return jsonify(get_events_by_error_type(error_type_id, 200))
+    except Exception as e:
+        print(f"Error fetching events by type: {e}")
+        return jsonify({"error": str(e)}), 500
 if __name__ == '__main__':
     app.run(host='0.0.0.0', port=5000)
 

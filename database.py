@@ -28,7 +28,7 @@ ERROR_MAPPING = {
 
 def init_db():
     with sqlite3.connect('xray_monitor.db') as conn:
-        # Существующая таблица...
+        # Legacy table (для обратной совместимости и миграции)
         conn.execute('''
             CREATE TABLE IF NOT EXISTS error_history (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -39,9 +39,36 @@ def init_db():
                 description TEXT
             )
         ''')
-        # ДОБАВЛЯЕМ ИНДЕКСЫ для мгновенной сортировки и фильтрации
-        conn.execute('CREATE INDEX IF NOT EXISTS idx_timestamp ON error_history(timestamp DESC)')
-        conn.execute('CREATE INDEX IF NOT EXISTS idx_error_type ON error_history(error_type)')
+
+        # Нормализованный справочник типов ошибок
+        conn.execute('''
+            CREATE TABLE IF NOT EXISTS error_types (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                normalized_text TEXT NOT NULL UNIQUE,
+                description TEXT NOT NULL
+            )
+        ''')
+
+        # События ошибок, связанные по error_type_id
+        conn.execute('''
+            CREATE TABLE IF NOT EXISTS error_events (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                timestamp DATETIME NOT NULL,
+                source_ip TEXT,
+                source_port INTEGER,
+                destination_host TEXT,
+                destination_port INTEGER,
+                raw_message TEXT NOT NULL,
+                error_type_id INTEGER NOT NULL,
+                UNIQUE (timestamp, raw_message),
+                FOREIGN KEY(error_type_id) REFERENCES error_types(id)
+            )
+        ''')
+
+        conn.execute('CREATE INDEX IF NOT EXISTS idx_events_timestamp ON error_events(timestamp DESC)')
+        conn.execute('CREATE INDEX IF NOT EXISTS idx_events_error_type_id ON error_events(error_type_id)')
+
+        _migrate_legacy_data(conn)
         conn.commit()
 
 def save_errors(data_list):
@@ -52,22 +79,30 @@ def save_errors(data_list):
                 if key in item['msg'].lower():
                     desc = val
                     break
-            # Проверяем, нет ли уже такой записи (по времени и тексту), чтобы не дублировать при фоновом чтении
-            exists = conn.execute('SELECT 1 FROM error_history WHERE timestamp=? AND error_type=?', 
-                                 (item['ts'], item['msg'])).fetchone()
-            if not exists:
-                conn.execute('''
-                    INSERT INTO error_history (timestamp, source, destination, error_type, description)
-                    VALUES (?, ?, ?, ?, ?)
-                ''', (item['ts'], item['src'], item['dest'], item['msg'], desc))
+            normalized_type = item.get('error_type') or item['msg']
+            error_type_id = _get_or_create_error_type(conn, normalized_type, desc)
+            conn.execute('''
+                INSERT OR IGNORE INTO error_events (
+                    timestamp, source_ip, source_port, destination_host, destination_port, raw_message, error_type_id
+                ) VALUES (?, ?, ?, ?, ?, ?, ?)
+            ''', (
+                item['ts'],
+                item.get('src'),
+                item.get('src_port'),
+                item.get('dest_host'),
+                item.get('dest_port'),
+                item['msg'],
+                error_type_id
+            ))
         conn.commit()
 
 def get_latest_logs(limit=30):
     with sqlite3.connect('xray_monitor.db') as conn:
         cursor = conn.cursor()
         cursor.execute('''
-            SELECT timestamp, error_type, description 
-            FROM error_history 
+            SELECT e.timestamp, t.normalized_text, t.description
+            FROM error_events e
+            JOIN error_types t ON t.id = e.error_type_id
             ORDER BY timestamp DESC 
             LIMIT ?
         ''', (limit,))
@@ -76,18 +111,100 @@ def get_latest_logs(limit=30):
 def get_aggregated_history():
     with sqlite3.connect('xray_monitor.db') as conn:
         cursor = conn.cursor()
-        # ИСПРАВЛЕНО: используем COUNT(*) вместо SUM(count)
         cursor.execute('''
-            SELECT error_type, description, COUNT(*) as total 
-            FROM error_history 
-            GROUP BY error_type 
+            SELECT t.id, t.normalized_text, t.description, COUNT(*) as total
+            FROM error_events e
+            JOIN error_types t ON t.id = e.error_type_id
+            GROUP BY t.id, t.normalized_text, t.description
             ORDER BY total DESC
         ''')
         return cursor.fetchall()
+
+def get_history_records(limit=500):
+    with sqlite3.connect('xray_monitor.db') as conn:
+        conn.row_factory = sqlite3.Row
+        cursor = conn.cursor()
+        cursor.execute('''
+            SELECT
+                e.timestamp,
+                COALESCE(e.source_ip, 'Client') AS source,
+                CASE
+                    WHEN e.destination_port IS NOT NULL THEN e.destination_host || ':' || e.destination_port
+                    ELSE COALESCE(e.destination_host, 'direct/api')
+                END AS destination,
+                t.id AS error_type_id,
+                t.normalized_text AS type,
+                t.description AS desc,
+                e.raw_message
+            FROM error_events e
+            JOIN error_types t ON t.id = e.error_type_id
+            ORDER BY e.timestamp DESC
+            LIMIT ?
+        ''', (limit,))
+        return [dict(row) for row in cursor.fetchall()]
+
+def get_events_by_error_type(error_type_id, limit=200):
+    with sqlite3.connect('xray_monitor.db') as conn:
+        conn.row_factory = sqlite3.Row
+        cursor = conn.cursor()
+        cursor.execute('''
+            SELECT
+                e.timestamp,
+                e.source_ip,
+                e.source_port,
+                e.destination_host,
+                e.destination_port,
+                e.raw_message,
+                t.normalized_text AS error_type,
+                t.description
+            FROM error_events e
+            JOIN error_types t ON t.id = e.error_type_id
+            WHERE e.error_type_id = ?
+            ORDER BY e.timestamp DESC
+            LIMIT ?
+        ''', (error_type_id, limit))
+        return [dict(row) for row in cursor.fetchall()]
 
 def cleanup_old_logs(days=7):
     """Удаляет записи старше указанного количества дней"""
     with sqlite3.connect('xray_monitor.db') as conn:
         limit_date = (datetime.now() - timedelta(days=days)).strftime('%Y/%m/%d %H:%M:%S')
-        conn.execute('DELETE FROM error_history WHERE timestamp < ?', (limit_date,))
+        conn.execute('DELETE FROM error_events WHERE timestamp < ?', (limit_date,))
+        conn.execute('''
+            DELETE FROM error_types
+            WHERE id NOT IN (SELECT DISTINCT error_type_id FROM error_events)
+        ''')
         conn.commit()
+
+def _get_or_create_error_type(conn, normalized_text, description):
+    cursor = conn.execute('SELECT id FROM error_types WHERE normalized_text = ?', (normalized_text,))
+    row = cursor.fetchone()
+    if row:
+        return row[0]
+    conn.execute(
+        'INSERT INTO error_types (normalized_text, description) VALUES (?, ?)',
+        (normalized_text, description)
+    )
+    return conn.execute('SELECT id FROM error_types WHERE normalized_text = ?', (normalized_text,)).fetchone()[0]
+
+def _migrate_legacy_data(conn):
+    has_legacy_rows = conn.execute('SELECT COUNT(*) FROM error_history').fetchone()[0]
+    has_events = conn.execute('SELECT COUNT(*) FROM error_events').fetchone()[0]
+    if has_events > 0 or has_legacy_rows == 0:
+        return
+
+    cursor = conn.execute('SELECT timestamp, source, destination, error_type, description FROM error_history')
+    for ts, source, destination, error_type, description in cursor.fetchall():
+        et_id = _get_or_create_error_type(conn, error_type or 'UNKNOWN', description or 'Неизвестная проблема')
+        dest_host = destination
+        dest_port = None
+        if destination and ':' in destination:
+            possible_host, possible_port = destination.rsplit(':', 1)
+            if possible_port.isdigit():
+                dest_host = possible_host
+                dest_port = int(possible_port)
+        conn.execute('''
+            INSERT OR IGNORE INTO error_events (
+                timestamp, source_ip, source_port, destination_host, destination_port, raw_message, error_type_id
+            ) VALUES (?, ?, ?, ?, ?, ?, ?)
+        ''', (ts, source, None, dest_host, dest_port, error_type or '', et_id))
