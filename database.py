@@ -1,30 +1,47 @@
+import os
 import sqlite3
 from datetime import datetime, timedelta
 
-ERROR_MAPPING = {
-    "io: read/write on closed pipe": "Разрыв соединения со стороны клиента (нормально)",
-    "connection reset by peer": "Сброс соединения сервером или провайдером",
-    "context deadline exceeded": "Таймаут: сервер не ответил вовремя",
-    "proxy/vless/encoding": "Ошибка протокола: проверьте UUID или настройки",
-    "failed to handler mux client connection": "Ошибка Mux: попробуйте отключить Mux на клиенте",
-    "transport: bad stream ID": "Ошибка мультиплексирования потоков",
-    "i/o timeout": "Таймаут ввода-вывода: удаленный ресурс не отвечает или порт заблокирован",
-    "all retry attempts failed": "Все попытки переподключения исчерпаны",
-    "write: broken pipe": "Обрыв соединения клиентом (часто из-за смены сети или закрытия приложения)",
-    "telegram": "Проблема с доступом к серверам Telegram",
-    "wireguard: connection ends": "Обрыв Wireguard-туннеля (проверьте MTU или ключи)",
-    "91.108.": "Сбой связи с дата-центром Telegram (Европа)",
-    "149.154.": "Сбой связи с дата-центром Telegram (Азия/Инфо)",
-    "timeout": "Превышено время ожидания (возможна блокировка порта или MTU)",
-    "failed to read client hello": "Попытка взлома или сканирования порта REALITY (отклонено)",
-    "write: broken pipe": "Обрыв связи: клиент или фильтры провайдера (РФ) разорвали поток",
-    "connection reset by peer": "Принудительный сброс сессии (возможно работа ТСПУ/РКН)",
-    "i/o timeout": "Таймаут: ресурс недоступен или порт закрыт хостером",
-    "failed to process request": "Внутренняя ошибка обработки запроса в Xray",
-    "cannot assign requested address": "Ошибка IPv6: сервер пытается использовать несуществующий IPv6 адрес",
-    "unexpected EOF": "Обрыв Mux-соединения: поток данных неожиданно прерван (рекомендуется отключить Mux)",
-    "connection timed out": "Таймаут соединения: сервер не ответил в отведенное время"
-}
+DEFAULT_ERROR_DESCRIPTION = "Неизвестная проблема"
+
+# Сопоставление подстроки в тексте сообщения (нижний регистр) → человекочитаемое описание.
+# Порядок важен: берётся первое совпадение (сначала более специфичные шаблоны).
+ERROR_DESCRIPTION_RULES: list[tuple[str, str]] = [
+    ("io: read/write on closed pipe", "Разрыв соединения со стороны клиента (нормально)"),
+    ("context deadline exceeded", "Таймаут: сервер не ответил вовремя"),
+    ("connection timed out", "Таймаут соединения: сервер не ответил в отведенное время"),
+    ("connection reset by peer", "Принудительный сброс сессии (возможно работа ТСПУ)"),
+    ("proxy/vless/encoding", "Ошибка протокола: проверьте UUID или настройки"),
+    ("failed to handler mux client connection", "Ошибка Mux: попробуйте отключить Mux на клиенте"),
+    ("transport: bad stream ID", "Ошибка мультиплексирования потоков"),
+    ("i/o timeout", "Таймаут: ресурс недоступен или порт закрыт хостером"),
+    ("all retry attempts failed", "Все попытки переподключения исчерпаны"),
+    ("wireguard: connection ends", "Обрыв Wireguard-туннеля (проверьте MTU или ключи)"),
+    ("91.108.", "Сбой связи с дата-центром Telegram (Европа)"),
+    ("149.154.", "Сбой связи с дата-центром Telegram (Азия/Инфо)"),
+    ("telegram", "Проблема с доступом к серверам Telegram"),
+    ("failed to read client hello", "Попытка взлома или сканирования порта REALITY (отклонено)"),
+    ("unsupported tls version", "Попытка взлома или сканирования порта REALITY (отклонено)"),
+    ("unsupported tls", "Попытка взлома или сканирования порта REALITY (отклонено)"),
+    ("incompatible cipher suite", "Попытка взлома или сканирования порта REALITY (отклонено)"),
+    ("no cipher suite", "Попытка взлома или сканирования порта REALITY (отклонено)"),
+    ("write: broken pipe", "Обрыв связи: клиент или фильтры провайдера разорвали поток"),
+    ("failed to process request", "Внутренняя ошибка обработки запроса в Xray"),
+    ("cannot assign requested address", "Ошибка IPv6: сервер пытается использовать несуществующий IPv6 адрес"),
+    ("unexpected eof", "Обрыв Mux-соединения: поток данных неожиданно прерван (рекомендуется отключить Mux)"),
+    ("timeout", "Превышено время ожидания (возможна блокировка порта или MTU)"),
+]
+
+
+def describe_error_message(msg: str) -> str:
+    """Возвращает описание по первому подходящему правилу; подстроки сравниваются в нижнем регистре."""
+    if not msg:
+        return DEFAULT_ERROR_DESCRIPTION
+    lowered = msg.lower()
+    for needle, description in ERROR_DESCRIPTION_RULES:
+        if needle in lowered:
+            return description
+    return DEFAULT_ERROR_DESCRIPTION
 
 def init_db():
     with sqlite3.connect('xray_monitor.db') as conn:
@@ -88,17 +105,50 @@ def init_db():
             )
         ''')
 
+        conn.execute('''
+            CREATE TABLE IF NOT EXISTS log_ingestion_state (
+                path TEXT PRIMARY KEY,
+                byte_offset INTEGER NOT NULL,
+                file_inode INTEGER NOT NULL
+            )
+        ''')
+
         _migrate_legacy_data(conn)
         conn.commit()
+
+def get_error_log_ingestion_state(path):
+    """Возвращает (byte_offset, file_inode) или (None, None), если записи ещё нет."""
+    key = os.path.abspath(path)
+    with sqlite3.connect('xray_monitor.db') as conn:
+        row = conn.execute(
+            'SELECT byte_offset, file_inode FROM log_ingestion_state WHERE path = ?',
+            (key,),
+        ).fetchone()
+    if not row:
+        return None, None
+    return int(row[0]), int(row[1])
+
+
+def set_error_log_ingestion_state(path, byte_offset, file_inode):
+    key = os.path.abspath(path)
+    with sqlite3.connect('xray_monitor.db') as conn:
+        conn.execute(
+            '''
+            INSERT INTO log_ingestion_state (path, byte_offset, file_inode)
+            VALUES (?, ?, ?)
+            ON CONFLICT(path) DO UPDATE SET
+                byte_offset = excluded.byte_offset,
+                file_inode = excluded.file_inode
+            ''',
+            (key, int(byte_offset), int(file_inode)),
+        )
+        conn.commit()
+
 
 def save_errors(data_list):
     with sqlite3.connect('xray_monitor.db') as conn:
         for item in data_list:
-            desc = "Неизвестная проблема"
-            for key, val in ERROR_MAPPING.items():
-                if key in item['msg'].lower():
-                    desc = val
-                    break
+            desc = describe_error_message(item.get('msg') or '')
             normalized_type = item.get('error_type') or item['msg']
             error_type_id = _get_or_create_error_type(conn, normalized_type, desc)
             conn.execute('''

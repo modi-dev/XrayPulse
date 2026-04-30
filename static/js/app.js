@@ -235,26 +235,29 @@ function renderTypeChart(data) {
 
 
 /**
- * 3. Обновление KPI Карточек (Dashboard Overview) - ИСПРАВЛЕНО! Теперь использует реальный подсчет данных из массива 'data'.
+ * 3. Обновление KPI Карточек (Dashboard Overview).
  */
 function updateKpiCards(data) {
-    const totalLogs = data ? data.length : 0;
-    let newErrorsCount = 0; 
+    const rows = Array.isArray(data) ? data : [];
+    const totalLogs = rows.length;
     let criticalErrorCount = 0;
-    let sources = new Set();
+    const sources = new Set();
 
-    // Проверка на существование ключевых элементов DOM перед присвоением значений.
+    const today = new Date();
+    const todayPrefix = `${today.getFullYear()}/${String(today.getMonth() + 1).padStart(2, '0')}/${String(today.getDate()).padStart(2, '0')}`;
+    const newErrorsToday = rows.filter(
+        (item) => item && typeof item.time === 'string' && item.time.startsWith(todayPrefix)
+    ).length;
+
     const totalElement = document.getElementById('kpi-total-logs');
     const newErrorsElement = document.getElementById('kpi-new-errors');
     const criticalErrorElement = document.getElementById('kpi-critical-errors');
     const activeSourcesElement = document.getElementById('kpi-active-sources');
 
-    // Установка счетчиков (безопасно)
     if (totalElement) totalElement.innerText = totalLogs;
-    if (newErrorsElement) newErrorsElement.innerText = Math.max(1, totalLogs); 
-    
-    // Пересчет KPI:
-    data.forEach(item => {
+    if (newErrorsElement) newErrorsElement.innerText = newErrorsToday;
+
+    rows.forEach((item) => {
         sources.add(item.source);
         if (item && item.type && (item.type.toUpperCase().includes('FATAL') || item.type.toUpperCase().includes('CRITICAL'))) {
             criticalErrorCount++;
@@ -265,8 +268,8 @@ function updateKpiCards(data) {
     if (criticalErrorElement) criticalErrorElement.innerText = criticalErrorCount;
 
 
-    if (activeSourcesElement && sources.size > 0) {
-         activeSourcesElement.innerText = sources.size;
+    if (activeSourcesElement) {
+        activeSourcesElement.innerText = sources.size;
     }
 }
 

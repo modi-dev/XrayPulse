@@ -50,6 +50,32 @@ USER_DATA = {
     os.getenv("DASHBOARD_USER"): os.getenv("DASHBOARD_PASS")
 }
 
+# Переменные конфигурации для стартового лога (DASHBOARD_USER / DASHBOARD_PASS намеренно не включены).
+_STARTUP_LOG_ENV_KEYS = (
+    "AUTH_ENABLED",
+    "ERROR_LOG_PATH",
+    "ERROR_LOG_SKIP_HISTORY",
+    "ERROR_LOG_LINE_MARKERS",
+    "GEO_LOOKUP_ENABLED",
+    "GEO_LOOKUP_DAILY_LIMIT",
+)
+
+
+def log_startup_config():
+    """Пишет в monitor_job.log и консоль значения окружения, кроме логина и пароля."""
+    log_message("--- Старт: переменные окружения (логин и пароль дашборда не выводятся) ---")
+    for key in _STARTUP_LOG_ENV_KEYS:
+        raw = os.environ.get(key)
+        if raw is None or str(raw).strip() == "":
+            log_message(f"  {key}: <не задано в окружении>")
+        else:
+            log_message(f"  {key}: {raw}")
+    log_message(
+        f"  Эффективно (после разбора): AUTH_ENABLED={AUTH_ENABLED}, "
+        f"GEO_LOOKUP_ENABLED={GEO_LOOKUP_ENABLED}, GEO_LOOKUP_DAILY_LIMIT={GEO_LOOKUP_DAILY_LIMIT}"
+    )
+
+
 def auth_required(func):
     """Условно включает проверку auth через AUTH_ENABLED."""
     if not AUTH_ENABLED:
@@ -66,6 +92,8 @@ def verify_password(username, password):
         return username
     if username in USER_DATA and USER_DATA.get(username) == password:
         return username
+
+log_startup_config()
 
 # Инициализируем БД при запуске
 init_db()
