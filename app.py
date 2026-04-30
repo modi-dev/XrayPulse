@@ -21,8 +21,10 @@ from database import (
     upsert_ip_profile,
     get_geo_lookup_daily_count,
     increment_geo_lookup_daily_count,
+    get_error_log_ingestion_state,
+    set_error_log_ingestion_state,
 )
-from parser import parse_xray_errors
+from parser import read_new_error_log_events
 from apscheduler.schedulers.background import BackgroundScheduler
 
 LOG_FILE = "monitor_job.log" # Добавляем константу для файла логов
@@ -38,6 +40,13 @@ def log_message(message):
         f.write(log_entry)
 
 load_dotenv()
+
+
+def error_log_path():
+    """Путь к error.log после load_dotenv (не полагаться на импорт parser до dotenv)."""
+    raw = os.getenv("ERROR_LOG_PATH", "/usr/local/x-ui/error.log").strip()
+    return os.path.abspath(raw or "/usr/local/x-ui/error.log")
+
 
 app = Flask(__name__)
 auth = HTTPBasicAuth()
@@ -102,13 +111,18 @@ def update_logs_job():
     """Функция, которая будет бегать в фоне"""
     log_message("--- Начинается фоновое обновление логов ---")
     try:
-        new_logs = parse_xray_errors(limit=500)
+        path = error_log_path()
+        off, ino = get_error_log_ingestion_state(path)
+        log_message(f"Инжест лога: offset={off!s}, inode={ino!s}.")
+        new_logs, new_off, new_ino = read_new_error_log_events(path, off, ino)
         if new_logs:
             save_errors(new_logs)
-            cleanup_old_logs(days=7)
-            log_message("Успешно сохранено и очищены старые логи.")
+        set_error_log_ingestion_state(path, new_off, new_ino)
+        cleanup_old_logs(days=7)
+        if new_logs:
+            log_message(f"Сохранено событий: {len(new_logs)}; смещение в логе (байт): {new_off}.")
         else:
-            log_message("Новых ошибок не обнаружено. Логирование пропущено.")
+            log_message("Новых завершённых строк под фильтры не найдено (или только неполная строка в конце файла).")
     except Exception as e:
         log_message(f"КРИТИЧЕСКАЯ ОШИБКА в фоновом задании: {e}")
 
@@ -211,10 +225,13 @@ def index():
 @app.route('/api/update')
 @auth_required
 def update_stats():
-    current_stats = parse_xray_errors()
+    path = error_log_path()
+    off, ino = get_error_log_ingestion_state(path)
+    current_stats, new_off, new_ino = read_new_error_log_events(path, off, ino)
     if current_stats:
         save_errors(current_stats)
-    return jsonify({"status": "success"})
+    set_error_log_ingestion_state(path, new_off, new_ino)
+    return jsonify({"status": "success", "ingested": len(current_stats)})
 
 @app.route('/api/recent')
 @auth_required
@@ -283,5 +300,5 @@ def api_error_type_events(error_type_id):
         print(f"Error fetching events by type: {e}")
         return jsonify({"error": str(e)}), 500
 if __name__ == '__main__':
-    app.run(host='0.0.0.0', port=5000)
+    app.run(host='127.0.0.1', port=5000)
 

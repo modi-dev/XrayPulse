@@ -204,8 +204,9 @@ def read_new_error_log_events(path, byte_offset, stored_inode):
 def parse_xray_errors(limit=1000):
     """Устаревшее чтение хвоста файла (последние limit строк). Для отладки / ручных сценариев."""
     extracted_data = []
+    path = os.getenv("ERROR_LOG_PATH", "/usr/local/x-ui/error.log").strip() or "/usr/local/x-ui/error.log"
     try:
-        with open(ERROR_LOG_PATH, "r", encoding="utf-8", errors="replace") as f:
+        with open(path, "r", encoding="utf-8", errors="replace") as f:
             lines = f.readlines()[-limit:]
         for line in lines:
             ev = _try_parse_xray_log_line(line)
