@@ -71,25 +71,40 @@ function renderMainChart(data) {
     if (!canvas) return;
 
     const selectedPeriod = getSelectedPeriod();
-    const periodToHours = {
-        '1h': 1,
-        '6h': 6,
-        '24h': 24,
-        '7d': 24 * 7,
-        '30d': 24 * 30
+    // Для коротких периодов делаем более детальную разбивку по минутам.
+    const periodConfig = {
+        '1h': { bucketMinutes: 1, bucketCount: 60 },
+        '6h': { bucketMinutes: 5, bucketCount: 72 },
+        '24h': { bucketMinutes: 30, bucketCount: 48 },
+        '7d': { bucketMinutes: 60, bucketCount: 24 * 7 },
+        '30d': { bucketMinutes: 180, bucketCount: 24 * 10 }
     };
+    const cfg = periodConfig[selectedPeriod] || periodConfig['7d'];
+    const bucketMs = cfg.bucketMinutes * 60 * 1000;
 
-    // Почасовая агрегация в зависимости от выбранного периода.
-    const hourlyMap = new Map();
-    const hoursBack = periodToHours[selectedPeriod] || 24 * 7;
+    const bucketMap = new Map();
     const parseLogTime = (value) => {
         if (!value || typeof value !== 'string') return null;
-        const m = value.match(/^(\d{4})[/-](\d{2})[/-](\d{2}) (\d{2}):(\d{2}):(\d{2})$/);
+        const m = value.match(
+            /^(\d{4})[/-](\d{2})[/-](\d{2}) (\d{2}):(\d{2}):(\d{2})(?:\.(\d{1,6}))?$/
+        );
         if (m) {
-            const [, y, mo, d, h, mi, s] = m;
-            return new Date(Number(y), Number(mo) - 1, Number(d), Number(h), Number(mi), Number(s));
+            const [, y, mo, d, h, mi, s, frac = '0'] = m;
+            const ms = Number((frac + '000').slice(0, 3));
+            return new Date(
+                Number(y),
+                Number(mo) - 1,
+                Number(d),
+                Number(h),
+                Number(mi),
+                Number(s),
+                ms
+            );
         }
-        const fallback = new Date(value.replace(/\//g, '-'));
+
+        // Фоллбек для редких нестандартных строк: нормализуем ISO-подобный формат.
+        const isoLike = value.replace(/\//g, '-').replace(' ', 'T');
+        const fallback = new Date(isoLike);
         return Number.isNaN(fallback.getTime()) ? null : fallback;
     };
 
@@ -99,31 +114,51 @@ function renderMainChart(data) {
         .filter(Boolean);
     const now = parsedDates.length ? new Date(Math.max(...parsedDates.map(d => d.getTime()))) : new Date();
 
-    for (let i = hoursBack - 1; i >= 0; i--) {
-        const dt = new Date(now.getTime() - i * 60 * 60 * 1000);
-        const key = `${dt.getFullYear()}-${String(dt.getMonth() + 1).padStart(2, '0')}-${String(dt.getDate()).padStart(2, '0')} ${String(dt.getHours()).padStart(2, '0')}:00`;
-        hourlyMap.set(key, 0);
+    const alignToBucketStart = (dt) => {
+        const ts = dt.getTime();
+        return new Date(Math.floor(ts / bucketMs) * bucketMs);
+    };
+    const formatBucketKey = (dt) => (
+        `${dt.getFullYear()}-${String(dt.getMonth() + 1).padStart(2, '0')}-${String(dt.getDate()).padStart(2, '0')} ` +
+        `${String(dt.getHours()).padStart(2, '0')}:${String(dt.getMinutes()).padStart(2, '0')}`
+    );
+
+    const nowBucketStart = alignToBucketStart(now);
+    for (let i = cfg.bucketCount - 1; i >= 0; i--) {
+        const dt = new Date(nowBucketStart.getTime() - i * bucketMs);
+        const key = formatBucketKey(dt);
+        bucketMap.set(key, 0);
     }
 
     data.filter(item => item && typeof item.time === 'string').forEach(item => {
         const dt = parseLogTime(item.time);
         if (!dt) return;
-        const key = `${dt.getFullYear()}-${String(dt.getMonth() + 1).padStart(2, '0')}-${String(dt.getDate()).padStart(2, '0')} ${String(dt.getHours()).padStart(2, '0')}:00`;
-        if (hourlyMap.has(key)) {
-            hourlyMap.set(key, (hourlyMap.get(key) || 0) + 1);
+        const key = formatBucketKey(alignToBucketStart(dt));
+        if (bucketMap.has(key)) {
+            bucketMap.set(key, (bucketMap.get(key) || 0) + 1);
         }
     });
 
-    const labels = Array.from(hourlyMap.keys());
-    const counts = labels.map(label => hourlyMap.get(label));
+    const labels = Array.from(bucketMap.keys());
+    const counts = labels.map(label => bucketMap.get(label));
     const maxCount = counts.length ? Math.max(...counts) : 0;
     const peakThreshold = maxCount > 0 ? Math.max(2, Math.ceil(maxCount * 0.7)) : 1;
     const pointColors = counts.map(c => (c >= peakThreshold ? '#ef4444' : '#60a5fa'));
-    const formattedLabels = labels.map(label => {
-        const [datePart, hourPart] = label.split(' ');
+    const compactTimePeriods = new Set(['1h', '6h']);
+    const renderTickLabel = (idx) => {
+        const current = labels[idx];
+        if (!current) return '';
+        const [datePart, hourPart] = current.split(' ');
         const [, month, day] = datePart.split('-');
+        const prevDate = idx > 0 ? labels[idx - 1]?.split(' ')[0] : null;
+        const isDateBoundary = idx === 0 || prevDate !== datePart;
+
+        if (compactTimePeriods.has(selectedPeriod)) {
+            // Для коротких периодов оставляем компактное время и показываем дату только при смене дня.
+            return isDateBoundary ? `${hourPart}\n${day}.${month}` : hourPart;
+        }
         return `${day}.${month} ${hourPart}`;
-    });
+    };
 
     if (mainChartInstance) {
         mainChartInstance.destroy();
@@ -132,7 +167,7 @@ function renderMainChart(data) {
     mainChartInstance = new Chart(canvas.getContext('2d'), {
         type: 'bar',
         data: {
-            labels: formattedLabels,
+            labels,
             datasets: [{
                 label: 'Количество инцидентов', 
                 data: counts,
@@ -164,12 +199,19 @@ function renderMainChart(data) {
                 },
                 x: {
                     grid: { display: false },
-                    ticks: { color: '#9CA3AF', maxRotation: 45, minRotation: 45, autoSkip: true, maxTicksLimit: 12 }
+                    ticks: {
+                        color: '#9CA3AF',
+                        maxRotation: 0,
+                        minRotation: 0,
+                        autoSkip: true,
+                        maxTicksLimit: compactTimePeriods.has(selectedPeriod) ? 10 : 12,
+                        callback: (_, index) => renderTickLabel(index)
+                    }
                 }
             }, 
             plugins: {
                 legend: { display: true, position: 'top' },
-                title: { display: true, text: `Тренд по часам (${selectedPeriod})` },
+                title: { display: true, text: `Тренд по времени (${selectedPeriod})` },
                 tooltip: {
                     callbacks: {
                         title: (tooltipItems) => {
