@@ -72,6 +72,8 @@ function renderMainChart(data) {
 
     const selectedPeriod = getSelectedPeriod();
     const periodToHours = {
+        '1h': 1,
+        '6h': 6,
         '24h': 24,
         '7d': 24 * 7,
         '30d': 24 * 30
