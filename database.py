@@ -20,6 +20,8 @@ ERROR_DESCRIPTION_RULES: list[tuple[str, str]] = [
     ("91.108.", "Сбой связи с дата-центром Telegram (Европа)"),
     ("149.154.", "Сбой связи с дата-центром Telegram (Азия/Инфо)"),
     ("telegram", "Проблема с доступом к серверам Telegram"),
+    ("server name mismatch", "REALITY/TLS: SNI не совпадает с dest — проверьте sni/serverNames в клиенте, устаревший профиль или чужой трафик на порт"),
+    ("reality: processed invalid connection", "REALITY: соединение отклонено (неверный TLS/SNI, сканирование или несовпадение настроек)"),
     ("failed to read client hello", "Попытка взлома или сканирования порта REALITY (отклонено)"),
     ("unsupported tls version", "Попытка взлома или сканирования порта REALITY (отклонено)"),
     ("unsupported tls", "Попытка взлома или сканирования порта REALITY (отклонено)"),

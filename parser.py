@@ -48,6 +48,13 @@ def normalize_error_type(raw_msg):
     msg = re.sub(r'\[[0-9a-fA-F:]+\]', '<IPV6>', msg)
     msg = re.sub(r'(?<![\w:])(?:[0-9a-fA-F]{1,4}:){2,7}[0-9a-fA-F]{1,4}(?![\w:])', '<IPV6>', msg)
     msg = re.sub(r'\b\d{1,3}(?:\.\d{1,3}){3}:\d+\b', '<IP:PORT>', msg)
+    # SNI до замены «голого» IPv4: иначе 45.159.249.97.sslip.io превращается в <IP>.sslip.io и не матчится.
+    msg = re.sub(
+        r'\bserver name mismatch:\s*\S+',
+        'server name mismatch: <SNI>',
+        msg,
+        flags=re.IGNORECASE,
+    )
     msg = re.sub(r'\b\d{1,3}(?:\.\d{1,3}){3}\b', '<IP>', msg)
     msg = re.sub(r'\b[a-zA-Z0-9.-]+\.\w+:\d+\b', '<HOST:PORT>', msg)
     msg = re.sub(r'\s+', ' ', msg).strip()

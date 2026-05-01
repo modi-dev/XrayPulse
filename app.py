@@ -2,6 +2,8 @@ import os
 import sqlite3
 import json
 import ipaddress
+import logging
+from logging.handlers import RotatingFileHandler
 from datetime import datetime
 from urllib.request import urlopen
 from urllib.parse import quote
@@ -27,19 +29,49 @@ from database import (
 from parser import read_new_error_log_events
 from apscheduler.schedulers.background import BackgroundScheduler
 
-LOG_FILE = "monitor_job.log" # Добавляем константу для файла логов
+# Путь к активному файлу лога задаётся в init_monitor_job_file_logging() после load_dotenv.
+LOG_FILE = os.path.abspath("monitor_job.log")
+_MONITOR_JOB_LOGGER = None
 POST_ROOT_DIAG = {}
 
+
+def init_monitor_job_file_logging():
+    """RotatingFileHandler: monitor_job.log, monitor_job.log.1, … при переполнении."""
+    global LOG_FILE, _MONITOR_JOB_LOGGER
+    raw = os.getenv("MONITOR_JOB_LOG_PATH", "monitor_job.log").strip() or "monitor_job.log"
+    LOG_FILE = os.path.abspath(raw)
+    max_bytes = int(os.getenv("MONITOR_JOB_LOG_MAX_BYTES", str(5 * 1024 * 1024)))
+    backup_count = int(os.getenv("MONITOR_JOB_LOG_BACKUP_COUNT", "5"))
+
+    lg = logging.getLogger("xraypulse.monitor_job")
+    lg.handlers.clear()
+    lg.setLevel(logging.INFO)
+    lg.propagate = False
+    h = RotatingFileHandler(
+        LOG_FILE,
+        maxBytes=max_bytes,
+        backupCount=backup_count,
+        encoding="utf-8",
+    )
+    h.setFormatter(logging.Formatter("%(message)s"))
+    lg.addHandler(h)
+    _MONITOR_JOB_LOGGER = lg
+
+
 def log_message(message):
-    """Простая функция логирования в файл и вывод в консоль."""
-    import datetime
-    timestamp = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    log_entry = f"[{timestamp}] {message}\n"
-    print(log_entry.strip()) # Выводим в консоль для мгновенной обратной связи
-    with open(LOG_FILE, "a", encoding="utf-8") as f:
-        f.write(log_entry)
+    """Лог в консоль и в ротируемый monitor_job.log."""
+    timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    line = f"[{timestamp}] {message}"
+    print(line)
+    if _MONITOR_JOB_LOGGER is not None:
+        _MONITOR_JOB_LOGGER.info("%s", line)
+    else:
+        with open(LOG_FILE, "a", encoding="utf-8") as f:
+            f.write(line + "\n")
+
 
 load_dotenv()
+init_monitor_job_file_logging()
 
 
 def error_log_path():
@@ -67,6 +99,9 @@ _STARTUP_LOG_ENV_KEYS = (
     "ERROR_LOG_LINE_MARKERS",
     "GEO_LOOKUP_ENABLED",
     "GEO_LOOKUP_DAILY_LIMIT",
+    "MONITOR_JOB_LOG_PATH",
+    "MONITOR_JOB_LOG_MAX_BYTES",
+    "MONITOR_JOB_LOG_BACKUP_COUNT",
 )
 
 
