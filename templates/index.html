@@ -66,19 +66,19 @@
         
         <!-- START: KPI Dashboard Cards (Сводная статистика) -->
         <div class="grid grid-cols-1 sm:grid-cols-3 gap-6 mb-10">
-            <!-- Карточка 1: Общее количество ошибок -->
+            <!-- Карточка 1: События за выбранный период -->
             <div class="bg-gray-800 p-6 rounded-xl border-l-4 border-blue-500 shadow-lg transition hover:scale-[1.02] duration-300">
-                <h2 class="text-sm text-gray-400 uppercase tracking-wider">Всего записей в логах</h2>
+                <h2 class="text-sm text-gray-400 uppercase tracking-wider">Событий за период</h2>
                 <p id="kpi-total-logs" class="text-4xl font-bold mt-1 text-blue-400">--</p>
             </div>
-            <!-- Карточка 2: Количество новых ошибок за период -->
+            <!-- Карточка 2: Уникальные типы ошибок -->
             <div class="bg-gray-800 p-6 rounded-xl border-l-4 border-green-500 shadow-lg transition hover:scale-[1.02] duration-300">
-                <h2 class="text-sm text-gray-400 uppercase tracking-wider">Новых ошибок сегодня</h2>
+                <h2 class="text-sm text-gray-400 uppercase tracking-wider">Уникальных типов ошибок</h2>
                 <p id="kpi-new-errors" class="text-4xl font-bold mt-1 text-green-400">--</p>
             </div>
-            <!-- Карточка 3: Критические ошибки -->
+            <!-- Карточка 3: Уникальные источники -->
             <div class="bg-gray-800 p-6 rounded-xl border-l-4 border-red-500 shadow-lg transition hover:scale-[1.02] duration-300">
-                <h2 class="text-sm text-gray-400 uppercase tracking-wider">Критических ошибок (ожидание)</h2>
+                <h2 class="text-sm text-gray-400 uppercase tracking-wider">Уникальных источников</h2>
                 <p id="kpi-critical-errors" class="text-4xl font-bold mt-1 text-red-400">--</p>
             </div>
         </div>

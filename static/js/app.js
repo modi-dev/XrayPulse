@@ -284,37 +284,26 @@ function renderTypeChart(data) {
 function updateKpiCards(data) {
     const rows = Array.isArray(data) ? data : [];
     const totalLogs = rows.length;
-    let criticalErrorCount = 0;
     const sources = new Set();
-
-    const today = new Date();
-    const todayPrefix = `${today.getFullYear()}/${String(today.getMonth() + 1).padStart(2, '0')}/${String(today.getDate()).padStart(2, '0')}`;
-    const newErrorsToday = rows.filter(
-        (item) => item && typeof item.time === 'string' && item.time.startsWith(todayPrefix)
-    ).length;
+    const uniqueTypes = new Set();
 
     const totalElement = document.getElementById('kpi-total-logs');
     const newErrorsElement = document.getElementById('kpi-new-errors');
     const criticalErrorElement = document.getElementById('kpi-critical-errors');
-    const activeSourcesElement = document.getElementById('kpi-active-sources');
 
     if (totalElement) totalElement.innerText = totalLogs;
-    if (newErrorsElement) newErrorsElement.innerText = newErrorsToday;
 
     rows.forEach((item) => {
-        sources.add(item.source);
-        if (item && item.type && (item.type.toUpperCase().includes('FATAL') || item.type.toUpperCase().includes('CRITICAL'))) {
-            criticalErrorCount++;
+        if (!item) return;
+        if (item.source) {
+            sources.add(item.source);
         }
+        const typeKey = `${item.error_type_id || 0}|${item.type || 'UNKNOWN'}`;
+        uniqueTypes.add(typeKey);
     });
 
-    // Установка критических ошибок после цикла:
-    if (criticalErrorElement) criticalErrorElement.innerText = criticalErrorCount;
-
-
-    if (activeSourcesElement) {
-        activeSourcesElement.innerText = sources.size;
-    }
+    if (newErrorsElement) newErrorsElement.innerText = uniqueTypes.size;
+    if (criticalErrorElement) criticalErrorElement.innerText = sources.size;
 }
 
 /**
