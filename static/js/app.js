@@ -481,12 +481,12 @@ function renderTable(rawData) {
 
     groupedData.forEach((group, index) => {
         // --- Основная строка лога (Visible row) ---
-        const countBadge = group.count > 1 
-            ? `<span class="ml-auto px-2 py-0.5 bg-blue-900/50 text-blue-400 border border-blue-500/30 rounded text-[10px] font-bold">×${group.count}</span>` 
+        const countBadge = group.count > 1
+            ? `<span class="shrink-0 px-2 py-0.5 bg-blue-900/50 text-blue-400 border border-blue-500/30 rounded text-[10px] font-bold">×${group.count}</span>`
             : '';
 
         const row = document.createElement('tr');
-        row.className = 'border-b border-gray-700 hover:bg-gray-750 transition cursor-pointer group';
+        row.className = 'border-b border-gray-700 hover:bg-gray-750 transition cursor-pointer';
         row.setAttribute('onclick', `handleHistoryRowClick(event, ${index})`);
         
         // Используем Template literals для чистой вставки HTML
@@ -499,9 +499,9 @@ function renderTable(rawData) {
                 ${group.source_owner ? `<div class="mt-1">${ownerBadge(group.source_owner, group.source_asn)}</div>` : ''}
             </td>
             <td class="px-4 py-3 text-xs text-yellow-200 font-mono">${group.destination}</td>
-            <td class="px-4 py-3 text-xs text-red-400 font-mono">
-                <div class="flex items-center w-full truncate max-w-[180px]">
-                    <span>${group.type}</span>
+            <td class="px-4 py-3 text-xs text-red-400 font-mono align-top">
+                <div class="flex items-start justify-between gap-2 min-w-0">
+                    <span class="min-w-0 flex-1 whitespace-normal break-words leading-snug">${group.type}</span>
                     ${countBadge}
                 </div>
             </td>
@@ -522,7 +522,7 @@ function renderTable(rawData) {
             <div class="flex flex-wrap gap-2 items-center py-1 border-b border-gray-800/50 last:border-0 hover:text-gray-200 text-xs">
                 <span class="font-mono text-blue-400/80 shrink-0">${formatDisplayTime(inst.time)}</span>
                 <span class="font-mono text-green-500/70 shrink-0">${inst.source}</span>
-                <span class="font-mono text-gray-500 flex-1 min-w-0 truncate">${inst.type}</span>
+                <span class="font-mono text-gray-500 flex-1 min-w-0 whitespace-normal break-words">${inst.type}</span>
                 <button type="button" class="copy-raw-btn shrink-0 text-cyan-400 hover:text-cyan-200 underline" data-group-index="${index}" data-inst-index="${j}">Копировать</button>
             </div>
         `).join('');
