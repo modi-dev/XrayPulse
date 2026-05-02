@@ -26,6 +26,19 @@ function getSelectedPeriod() {
     return select?.value || '7d';
 }
 
+/** Сессия истекла или не залогинены — переход на страницу входа. */
+async function redirectIfUnauthorized(res) {
+    if (res.status !== 401) return false;
+    try {
+        const j = await res.json();
+        const u = typeof j.login_url === 'string' && j.login_url.startsWith('/') ? j.login_url : '/login';
+        window.location.assign(u);
+    } catch (_) {
+        window.location.assign('/login');
+    }
+    return true;
+}
+
 function escapeHtmlText(s) {
     return String(s ?? '')
         .replace(/&/g, '&amp;')
@@ -675,6 +688,7 @@ async function loadData(options = {}) {
         const typesUrl = `/api/error-types?period=${encodeURIComponent(period)}`;
 
         const histRes = await fetch(historyUrl);
+        if (await redirectIfUnauthorized(histRes)) return;
         if (!histRes.ok) throw new Error(`Ошибка сервера: ${histRes.status}`);
         const payload = await histRes.json();
 
@@ -747,6 +761,7 @@ async function loadData(options = {}) {
 window.refreshData = async function refreshData() {
     try {
         const r = await fetch('/api/update');
+        if (await redirectIfUnauthorized(r)) return;
         if (!r.ok) throw new Error(`update ${r.status}`);
         await loadData({ resetPaging: true });
     } catch (e) {

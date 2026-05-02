@@ -3,6 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <title>XrayPulse Dashboard</title>
+    <link rel="icon" href="{{ url_for('static', filename='favicon.svg') }}" type="image/svg+xml">
     <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
     <script src="https://cdn.tailwindcss.com"></script>
     <style>
@@ -17,6 +18,9 @@
         <header class="flex justify-between items-center mb-8">
             <h1 class="text-3xl font-extrabold text-blue-400">XrayPulse Dashboard</h1>
             <div>
+                {% if auth_enabled %}
+                <a href="{{ url_for('logout') }}" class="inline-block text-sm text-gray-400 hover:text-white border border-gray-600 hover:border-gray-400 rounded px-3 py-2 transition mr-3">Выйти</a>
+                {% endif %}
                 <button onclick="refreshData()" class="bg-blue-600 hover:bg-blue-500 px-4 py-2 rounded text-sm transition mr-3">Обновить логи</button>
                 <!-- Добавление секции выбора периода для общих настроек -->
                 <select id="periodFilter" class="bg-gray-700 hover:bg-gray-600 border border-gray-600 text-sm rounded px-3 py-2 transition">
@@ -185,6 +189,6 @@
         </div>
     </aside>
 <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
-<script src="{{ url_for('static', filename='js/app.js', v='20260502-2510') }}"></script>
+<script src="{{ url_for('static', filename='js/app.js', v='20260502-2520') }}"></script>
 </body>
 </html>

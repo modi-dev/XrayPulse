@@ -1,0 +1,66 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Вход — XrayPulse</title>
+    <link rel="icon" href="{{ url_for('static', filename='favicon.svg') }}" type="image/svg+xml">
+    <script src="https://cdn.tailwindcss.com"></script>
+    <style>
+        .login-bg {
+            background: radial-gradient(ellipse 120% 80% at 50% -20%, rgba(59, 130, 246, 0.35), transparent 55%),
+                        radial-gradient(ellipse 80% 60% at 100% 50%, rgba(139, 92, 246, 0.12), transparent 50%),
+                        radial-gradient(ellipse 60% 50% at 0% 80%, rgba(6, 182, 212, 0.1), transparent 45%),
+                        #0f172a;
+        }
+        .login-card {
+            background: linear-gradient(145deg, rgba(30, 41, 59, 0.92) 0%, rgba(15, 23, 42, 0.96) 100%);
+            box-shadow: 0 0 0 1px rgba(148, 163, 184, 0.12), 0 25px 50px -12px rgba(0, 0, 0, 0.55);
+        }
+    </style>
+</head>
+<body class="login-bg min-h-screen text-slate-100 flex flex-col items-center justify-center p-4">
+    <div class="w-full max-w-md login-card rounded-2xl border border-slate-600/40 p-8 md:p-10 backdrop-blur-sm">
+        <div class="text-center mb-8">
+            <img src="{{ url_for('static', filename='favicon.svg') }}" width="56" height="56" alt="" class="mx-auto mb-4 h-14 w-14 rounded-xl shadow-lg shadow-blue-500/25" />
+            <h1 class="text-2xl font-bold tracking-tight text-white">XrayPulse</h1>
+            <p class="text-sm text-slate-400 mt-1">Войдите, чтобы открыть дашборд</p>
+        </div>
+
+        {% with messages = get_flashed_messages(with_categories=true) %}
+        {% if messages %}
+        <ul class="mb-6 space-y-2" role="alert">
+            {% for category, message in messages %}
+            <li class="rounded-lg px-3 py-2 text-sm {% if category == 'error' %}bg-red-950/50 text-red-200 border border-red-800/50{% else %}bg-amber-950/40 text-amber-100 border border-amber-800/40{% endif %}">{{ message }}</li>
+            {% endfor %}
+        </ul>
+        {% endif %}
+        {% endwith %}
+
+        <form method="post" action="{{ url_for('login') }}" class="space-y-5" autocomplete="on">
+            {% if next %}
+            <input type="hidden" name="next" value="{{ next }}">
+            {% endif %}
+            <div>
+                <label for="username" class="block text-xs font-medium uppercase tracking-wider text-slate-400 mb-1.5">Логин</label>
+                <input id="username" name="username" type="text" required autofocus
+                    class="w-full rounded-lg border border-slate-600 bg-slate-900/80 px-3 py-2.5 text-slate-100 placeholder-slate-500 outline-none ring-0 transition focus:border-blue-500 focus:ring-2 focus:ring-blue-500/30"
+                    placeholder="Имя пользователя" autocomplete="username">
+            </div>
+            <div>
+                <label for="password" class="block text-xs font-medium uppercase tracking-wider text-slate-400 mb-1.5">Пароль</label>
+                <input id="password" name="password" type="password" required
+                    class="w-full rounded-lg border border-slate-600 bg-slate-900/80 px-3 py-2.5 text-slate-100 placeholder-slate-500 outline-none transition focus:border-blue-500 focus:ring-2 focus:ring-blue-500/30"
+                    placeholder="••••••••" autocomplete="current-password">
+            </div>
+            <button type="submit"
+                class="w-full rounded-lg bg-gradient-to-r from-blue-600 to-indigo-600 py-3 text-sm font-semibold text-white shadow-lg shadow-blue-600/25 transition hover:from-blue-500 hover:to-indigo-500 focus:outline-none focus:ring-2 focus:ring-blue-400 focus:ring-offset-2 focus:ring-offset-slate-900">
+                Войти
+            </button>
+        </form>
+        <p class="mt-8 text-center text-[11px] text-slate-500 leading-relaxed">
+            После нескольких неверных попыток вход с вашего адреса временно блокируется.
+        </p>
+    </div>
+</body>
+</html>

@@ -6,14 +6,15 @@ import logging
 import time
 import base64
 import re
+import secrets
+import threading
 from logging.handlers import RotatingFileHandler
-from datetime import datetime
+from datetime import datetime, timedelta
 from urllib.request import urlopen
 from urllib.parse import quote
 from functools import wraps
 from dotenv import load_dotenv
-from flask import Flask, jsonify, render_template, request
-from flask_httpauth import HTTPBasicAuth
+from flask import Flask, flash, jsonify, redirect, render_template, request, send_from_directory, session, url_for
 # Объединяем итоговый импорт из database
 from database import (
     init_db,
@@ -129,7 +130,9 @@ def log_message(message):
             f.write(line + "\n")
 
 
-load_dotenv()
+# override=True: значения из .env перекрывают уже заданные в окружении процесса переменные
+# (иначе, например, AUTH_ENABLED=false в системе/IDE игнорирует строку в .env).
+load_dotenv(override=True)
 init_monitor_job_file_logging()
 
 
@@ -140,19 +143,83 @@ def error_log_path():
 
 
 app = Flask(__name__)
-auth = HTTPBasicAuth()
 
 AUTH_ENABLED = os.getenv("AUTH_ENABLED", "true").strip().lower() in ("1", "true", "yes", "on")
 GEO_LOOKUP_ENABLED = os.getenv("GEO_LOOKUP_ENABLED", "true").strip().lower() in ("1", "true", "yes", "on")
 GEO_LOOKUP_DAILY_LIMIT = int(os.getenv("GEO_LOOKUP_DAILY_LIMIT", "1699"))
 
-USER_DATA = {
-    os.getenv("DASHBOARD_USER"): os.getenv("DASHBOARD_PASS")
-}
+_dash_user = os.getenv("DASHBOARD_USER")
+_dash_pass = os.getenv("DASHBOARD_PASS")
+USER_DATA = {_dash_user: _dash_pass} if _dash_user and _dash_pass is not None else {}
+
+AUTH_LOCKOUT_MAX_ATTEMPTS = max(1, int(os.getenv("AUTH_LOCKOUT_MAX_ATTEMPTS", "5")))
+AUTH_LOCKOUT_SECONDS = max(30, int(os.getenv("AUTH_LOCKOUT_SECONDS", "300")))
+AUTH_TRUST_X_FORWARDED = os.getenv("AUTH_TRUST_X_FORWARDED", "").strip().lower() in ("1", "true", "yes", "on")
+
+_flask_secret = (os.getenv("FLASK_SECRET_KEY") or "").strip()
+if not _flask_secret:
+    _flask_secret = secrets.token_hex(32)
+    print("[XrayPulse] WARNING: FLASK_SECRET_KEY не задан; сгенерирован временный ключ (сессии сбросятся после перезапуска).")
+app.config["SECRET_KEY"] = _flask_secret
+app.config["PERMANENT_SESSION_LIFETIME"] = timedelta(days=7)
+app.config["SESSION_COOKIE_HTTPONLY"] = True
+app.config["SESSION_COOKIE_SAMESITE"] = "Lax"
+
+_login_lock = threading.Lock()
+_login_failures = {}  # ip -> {"failures": int, "locked_until": float epoch}
+
+
+def _auth_client_ip():
+    """IP для учёта попыток входа. X-Forwarded-For только при явном доверии (прокси)."""
+    if AUTH_TRUST_X_FORWARDED:
+        xff = (request.headers.get("X-Forwarded-For") or "").strip()
+        if xff:
+            return xff.split(",")[0].strip()[:200]
+    return (request.remote_addr or "unknown")[:200]
+
+
+def _login_locked_until(ip):
+    """Время окончания блокировки (epoch) или 0."""
+    with _login_lock:
+        rec = _login_failures.get(ip)
+        if not rec:
+            return 0.0
+        until = float(rec.get("locked_until") or 0)
+        if time.time() >= until:
+            return 0.0
+        return until
+
+
+def _login_record_failure(ip):
+    with _login_lock:
+        rec = _login_failures.get(ip) or {"failures": 0, "locked_until": 0.0}
+        now = time.time()
+        if now < float(rec.get("locked_until") or 0):
+            return
+        if now >= float(rec.get("locked_until") or 0) and rec.get("locked_until"):
+            rec["failures"] = 0
+            rec["locked_until"] = 0.0
+        rec["failures"] = int(rec.get("failures", 0)) + 1
+        if rec["failures"] >= AUTH_LOCKOUT_MAX_ATTEMPTS:
+            rec["locked_until"] = now + float(AUTH_LOCKOUT_SECONDS)
+            rec["failures"] = 0
+            log_message(
+                f"AUTH lockout ip={ip} duration_s={AUTH_LOCKOUT_SECONDS} "
+                f"max_attempts={AUTH_LOCKOUT_MAX_ATTEMPTS}"
+            )
+        _login_failures[ip] = rec
+
+
+def _login_clear_failures(ip):
+    with _login_lock:
+        _login_failures.pop(ip, None)
 
 # Переменные конфигурации для стартового лога (DASHBOARD_USER / DASHBOARD_PASS намеренно не включены).
 _STARTUP_LOG_ENV_KEYS = (
     "AUTH_ENABLED",
+    "AUTH_LOCKOUT_MAX_ATTEMPTS",
+    "AUTH_LOCKOUT_SECONDS",
+    "AUTH_TRUST_X_FORWARDED",
     "ERROR_LOG_PATH",
     "ERROR_LOG_SKIP_HISTORY",
     "ERROR_LOG_LINE_MARKERS",
@@ -173,33 +240,101 @@ def log_startup_config():
             log_message(f"  {key}: <не задано в окружении>")
         else:
             log_message(f"  {key}: {raw}")
+    if (os.environ.get("FLASK_SECRET_KEY") or "").strip():
+        log_message("  FLASK_SECRET_KEY: <задано, значение не выводится>")
+    else:
+        log_message("  FLASK_SECRET_KEY: <не задано — при старте сгенерирован временный ключ>")
     log_message(
         f"  Эффективно (после разбора): AUTH_ENABLED={AUTH_ENABLED}, "
+        f"AUTH_LOCKOUT_MAX_ATTEMPTS={AUTH_LOCKOUT_MAX_ATTEMPTS}, "
+        f"AUTH_LOCKOUT_SECONDS={AUTH_LOCKOUT_SECONDS}, AUTH_TRUST_X_FORWARDED={AUTH_TRUST_X_FORWARDED}, "
         f"GEO_LOOKUP_ENABLED={GEO_LOOKUP_ENABLED}, GEO_LOOKUP_DAILY_LIMIT={GEO_LOOKUP_DAILY_LIMIT}"
     )
 
 
+def _safe_next_param(val):
+    """Только относительный путь на этом сайте (без open-redirect)."""
+    if not val or not isinstance(val, str):
+        return None
+    t = val.strip()
+    if len(t) > 2048 or not t.startswith("/") or t.startswith("//"):
+        return None
+    return t
+
+
+def _login_next_from_request():
+    path = request.path
+    qs = request.query_string.decode("utf-8", errors="ignore")
+    nxt = f"{path}?{qs}" if qs else path
+    login_path = url_for("login")
+    if nxt == login_path:
+        return None
+    return _safe_next_param(nxt)
+
+
 def auth_required(func):
-    """Условно включает проверку auth через AUTH_ENABLED."""
-    if not AUTH_ENABLED:
-        @wraps(func)
-        def wrapped(*args, **kwargs):
+    """Сессия дашборда; при AUTH_ENABLED=false — без проверки."""
+    @wraps(func)
+    def wrapped(*args, **kwargs):
+        if not AUTH_ENABLED:
             return func(*args, **kwargs)
-        return wrapped
-    return auth.login_required(func)
+        if session.get("dash_user"):
+            return func(*args, **kwargs)
+        if request.path.startswith("/api/"):
+            return jsonify({"error": "unauthorized", "login_url": url_for("login", _external=False)}), 401
+        nxt = _login_next_from_request()
+        return redirect(url_for("login", next=nxt) if nxt else url_for("login"))
 
+    return wrapped
 
-@auth.verify_password
-def verify_password(username, password):
-    if not AUTH_ENABLED:
-        return username
-    if username in USER_DATA and USER_DATA.get(username) == password:
-        return username
 
 log_startup_config()
 
 # Инициализируем БД при запуске
 init_db()
+
+
+@app.route("/login", methods=["GET", "POST"])
+def login():
+    if not AUTH_ENABLED:
+        return redirect(url_for("index"))
+    if session.get("dash_user"):
+        nxt = _safe_next_param(request.args.get("next") or request.form.get("next"))
+        return redirect(nxt or url_for("index"))
+    if not USER_DATA:
+        flash("Учётная запись дашборда не настроена (задайте DASHBOARD_USER и DASHBOARD_PASS).", "error")
+        return render_template("login.html", next=None), 503
+
+    ip = _auth_client_ip()
+    if request.method == "POST":
+        until = _login_locked_until(ip)
+        if until > 0 and time.time() < until:
+            rem = max(0, int(until - time.time()))
+            mm, ss = rem // 60, rem % 60
+            flash(f"Слишком много попыток входа. Повторите через {mm} мин. {ss} сек.", "error")
+            return (
+                render_template("login.html", next=_safe_next_param(request.form.get("next"))),
+                429,
+            )
+        username = (request.form.get("username") or "").strip()
+        password = request.form.get("password") or ""
+        if username in USER_DATA and USER_DATA.get(username) == password:
+            _login_clear_failures(ip)
+            session.permanent = True
+            session["dash_user"] = username
+            nxt = _safe_next_param(request.form.get("next"))
+            return redirect(nxt or url_for("index"))
+        _login_record_failure(ip)
+        flash("Неверный логин или пароль.", "error")
+        return render_template("login.html", next=_safe_next_param(request.form.get("next")))
+    return render_template("login.html", next=_safe_next_param(request.args.get("next")))
+
+
+@app.route("/logout")
+def logout():
+    session.pop("dash_user", None)
+    return redirect(url_for("login"))
+
 
 def update_logs_job():
     """Функция, которая будет бегать в фоне"""
@@ -320,10 +455,17 @@ scheduler = BackgroundScheduler()
 scheduler.add_job(func=update_logs_job, trigger="interval", seconds=30)
 scheduler.start()
 
+
+@app.route("/favicon.ico")
+def favicon():
+    """Запрос вкладки по умолчанию; отдаём тот же SVG, что и в static/favicon.svg."""
+    return send_from_directory(app.static_folder, "favicon.svg", mimetype="image/svg+xml")
+
+
 @app.route('/')
 @auth_required
 def index():
-    return render_template('index.html')
+    return render_template("index.html", auth_enabled=AUTH_ENABLED)
 
 @app.route('/api/update')
 @auth_required
