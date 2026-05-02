@@ -19,7 +19,8 @@
         }
     </style>
 </head>
-<body class="login-bg min-h-screen text-slate-100 flex flex-col items-center justify-center p-4">
+<body class="login-bg min-h-screen text-slate-100 flex flex-col p-4">
+    <div class="flex flex-1 flex-col items-center justify-center w-full">
     <div class="w-full max-w-md login-card rounded-2xl border border-slate-600/40 p-8 md:p-10 backdrop-blur-sm">
         <div class="text-center mb-8">
             <img src="{{ url_for('static', filename='favicon.svg') }}" width="56" height="56" alt="" class="mx-auto mb-4 h-14 w-14 rounded-xl shadow-lg shadow-blue-500/25" />
@@ -62,5 +63,16 @@
             После нескольких неверных попыток вход с вашего адреса временно блокируется.
         </p>
     </div>
+    </div>
+
+    <footer class="w-full max-w-md mx-auto shrink-0 pb-6 pt-2 text-center">
+        <a href="https://github.com/modi-dev/XrayPulse#поддержка-проекта"
+            target="_blank" rel="noopener noreferrer"
+            class="inline-flex items-center justify-center gap-2 rounded-lg border border-slate-500/60 bg-slate-900/40 px-4 py-2.5 text-sm font-medium text-slate-200 transition hover:border-blue-400/50 hover:bg-slate-800/60 hover:text-white focus:outline-none focus:ring-2 focus:ring-blue-500/40">
+            <span aria-hidden="true">♥</span>
+            Поддержать проект
+        </a>
+        <p class="mt-2 text-[11px] text-slate-500">Реквизиты и способы — в README на GitHub</p>
+    </footer>
 </body>
 </html>

@@ -4,6 +4,16 @@
 
 **Релизы:** [GitHub Releases](https://github.com/modi-dev/XrayPulse/releases) · [CHANGELOG.md](CHANGELOG.md)
 
+## Поддержка проекта
+
+Если XrayPulse оказался полезен, можно поддержать развитие:
+
+| Способ | Реквизиты |
+|--------|-----------|
+| Telegram | [t.me/SergeyBayer](https://t.me/SergeyBayer) |
+| USDT (Tron) | `TCVnbNPFHNRQpUmQAmCwiUEt4em67YqYRn` |
+| Ethereum | `0xD935400Aa57934ECdfCAE9c049C6921c146FeDa3` |
+
 ## Возможности
 
 - Парсинг строк `error.log` (IPv4/IPv6, SNI/sslip.io и др.) и нормализация типов ошибок в SQLite.
@@ -71,3 +81,4 @@ python app.py
 - База создаётся автоматически: **`xray_monitor.db`** (рядом с приложением, если не менять логику путей).
 - Для локальной отладки без пароля: **`AUTH_ENABLED=false`** в `.env`.
 - За **nginx** с TLS обычно нужны **`AUTH_TRUST_X_FORWARDED=true`** (корректный IP для блокировки входа) и проксирование заголовков; приложение слушает по умолчанию `127.0.0.1:5000` — см. `app.py` для смены хоста/порта.
+
