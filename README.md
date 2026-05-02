@@ -2,6 +2,8 @@
 
 Веб-дашборд для анализа ошибок Xray из `error.log`: агрегаты, история, фильтры и обогащение IP.
 
+**Релизы:** [GitHub Releases](https://github.com/modi-dev/XrayPulse/releases) · [CHANGELOG.md](CHANGELOG.md)
+
 ## Возможности
 
 - Парсинг строк `error.log` (IPv4/IPv6, SNI/sslip.io и др.) и нормализация типов ошибок в SQLite.
