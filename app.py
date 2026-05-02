@@ -361,7 +361,7 @@ def api_history():
         except ValueError:
             limit = 500
         error_type_ids = request.args.getlist('error_type_id')
-        source_ips = request.args.getlist('source_ip')
+        source_ip_query = (request.args.get('source_ip') or '').strip() or None
         destination_keys = request.args.getlist('destination')
         cursor_token = request.args.get('cursor')
 
@@ -371,7 +371,7 @@ def api_history():
             limit=limit,
             period=period,
             error_type_ids=error_type_ids or None,
-            source_ips=source_ips or None,
+            source_ip_query=source_ip_query,
             destination_keys=destination_keys or None,
             cursor_ts=cur_ts,
             cursor_rowid=cur_rid,
@@ -379,7 +379,7 @@ def api_history():
         summary = get_history_summary(
             period=period,
             error_type_ids=error_type_ids or None,
-            source_ips=source_ips or None,
+            source_ip_query=source_ip_query,
             destination_keys=destination_keys or None,
         )
 
@@ -405,7 +405,7 @@ def api_history():
             "METRIC api_history "
             f"duration_ms={elapsed_ms} rows={len(formatted)} limit={limit} period={period} "
             f"has_more={int(has_more)} etypes={len(error_type_ids)} "
-            f"srcs={len(source_ips)} dests={len(destination_keys)}"
+            f"src_ip_q={int(bool(source_ip_query))} dests={len(destination_keys)}"
         )
 
         return jsonify({

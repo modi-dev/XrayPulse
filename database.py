@@ -225,8 +225,8 @@ def _destination_key_sql():
     )
 
 
-def _history_filter_sql(period, error_type_ids=None, source_ips=None, destination_keys=None):
-    """WHERE для истории: период + опционально несколько типов, IP, целей."""
+def _history_filter_sql(period, error_type_ids=None, source_ip_query=None, destination_keys=None):
+    """WHERE для истории: период + опционально несколько типов, подстрока IP, целей."""
     since = _period_to_since(period)
     clauses = ["datetime(replace(e.timestamp, '/', '-')) >= datetime(?)"]
     params = [since]
@@ -237,11 +237,10 @@ def _history_filter_sql(period, error_type_ids=None, source_ips=None, destinatio
         clauses.append(f"e.error_type_id IN ({ph})")
         params.extend(et_ids)
 
-    ips = _str_list(source_ips)
-    if ips:
-        ph = ",".join("?" * len(ips))
-        clauses.append(f"COALESCE(e.source_ip, 'Client') IN ({ph})")
-        params.extend(ips)
+    sip_q = (source_ip_query or "").strip()
+    if sip_q:
+        clauses.append("INSTR(LOWER(COALESCE(e.source_ip, 'Client')), LOWER(?)) > 0")
+        params.append(sip_q)
 
     dests = _str_list(destination_keys)
     if dests:
@@ -252,9 +251,9 @@ def _history_filter_sql(period, error_type_ids=None, source_ips=None, destinatio
     return " AND ".join(clauses), params
 
 
-def get_history_summary(period='7d', error_type_ids=None, source_ips=None, destination_keys=None):
+def get_history_summary(period='7d', error_type_ids=None, source_ip_query=None, destination_keys=None):
     """Агрегаты по отфильтрованной выборке (для KPI)."""
-    where_sql, params = _history_filter_sql(period, error_type_ids, source_ips, destination_keys)
+    where_sql, params = _history_filter_sql(period, error_type_ids, source_ip_query, destination_keys)
     with sqlite3.connect('xray_monitor.db') as conn:
         row = conn.execute(
             f'''
@@ -292,25 +291,14 @@ def get_filter_picklists(period='7d', limit=400):
         )
         destinations = [r[0] for r in cur.fetchall()]
 
-        cur.execute(
-            '''
-            SELECT DISTINCT COALESCE(e.source_ip, 'Client') AS sip
-            FROM error_events e
-            WHERE datetime(replace(e.timestamp, '/', '-')) >= datetime(?)
-            ORDER BY sip
-            LIMIT ?
-            ''',
-            (since, limit),
-        )
-        source_ips = [r[0] for r in cur.fetchall()]
-    return {"destinations": destinations, "source_ips": source_ips}
+    return {"destinations": destinations}
 
 
 def get_history_records(
     limit=500,
     period='7d',
     error_type_ids=None,
-    source_ips=None,
+    source_ip_query=None,
     destination_keys=None,
     cursor_ts=None,
     cursor_rowid=None,
@@ -319,7 +307,7 @@ def get_history_records(
     История с фильтрами и keyset-пагинацией по (timestamp DESC, rowid DESC).
     Возвращает (rows, has_more) где rows — не более limit элементов.
     """
-    where_sql, params = _history_filter_sql(period, error_type_ids, source_ips, destination_keys)
+    where_sql, params = _history_filter_sql(period, error_type_ids, source_ip_query, destination_keys)
     if cursor_ts is not None and cursor_rowid is not None:
         where_sql = (
             f"({where_sql}) AND (e.timestamp < ? OR (e.timestamp = ? AND e.rowid < ?))"

@@ -304,49 +304,151 @@ function renderTypeChartFromApi(aggregatedRows) {
     `;
 }
 
-function selectedOptionValues(selectEl) {
-    if (!selectEl) return new Set();
-    return new Set(Array.from(selectEl.selectedOptions).map((o) => o.value).filter(Boolean));
+function checkedValuesFromListRoot(listRoot) {
+    if (!listRoot) return new Set();
+    const set = new Set();
+    listRoot.querySelectorAll('input[type="checkbox"]').forEach((cb) => {
+        if (cb.checked && cb.value) set.add(cb.value);
+    });
+    return set;
+}
+
+/** Скрывает строки чекбоксов, не совпадающие с полем поиска в той же панели. */
+function applyMultiddListSearch(wrap) {
+    if (!wrap) return;
+    const inp = wrap.querySelector('.filter-multidd-search');
+    const listRoot = wrap.querySelector('.filter-multidd-list');
+    if (!listRoot) return;
+    const q = (inp?.value || '').trim().toLowerCase();
+    listRoot.querySelectorAll('label').forEach((lab) => {
+        const txt = (lab.textContent || '').toLowerCase();
+        lab.classList.toggle('hidden', q.length > 0 && !txt.includes(q));
+    });
+}
+
+function updateFilterMultiddSummary(wrap) {
+    if (!wrap) return;
+    const summary = wrap.querySelector('.filter-multidd-summary');
+    const listRoot = wrap.querySelector('.filter-multidd-list');
+    const trigger = wrap.querySelector('.filter-multidd-trigger');
+    if (!summary || !listRoot) return;
+    const emptyText = wrap.dataset.emptySummary || 'Все';
+    const checked = listRoot.querySelectorAll('input[type="checkbox"]:checked');
+    const n = checked.length;
+    if (n === 0) {
+        summary.textContent = emptyText;
+    } else if (n === 1) {
+        const lab = checked[0].closest('label')?.querySelector('.filter-multidd-cblabel');
+        const t = lab?.textContent?.trim() || checked[0].value;
+        summary.textContent = t.length > 48 ? `${t.slice(0, 45)}…` : t;
+    } else {
+        summary.textContent = `Выбрано: ${n}`;
+    }
+    const panel = wrap.querySelector('.filter-multidd-panel');
+    if (trigger && panel) {
+        trigger.setAttribute('aria-expanded', panel.classList.contains('hidden') ? 'false' : 'true');
+    }
 }
 
 /**
- * Перезаполняет select[multiple], сохраняя выбор, если значения ещё есть в новом списке.
+ * Перезаполняет список чекбоксов, сохраняя выбор, если значения есть в новом наборе.
  */
-function repopulateMultiSelect(selectEl, items, toOption) {
-    if (!selectEl) return;
-    const prev = selectedOptionValues(selectEl);
-    selectEl.innerHTML = '';
+function repopulateCheckboxFilterList(listRoot, items, toOption) {
+    if (!listRoot) return;
+    const prev = checkedValuesFromListRoot(listRoot);
+    listRoot.innerHTML = '';
     (Array.isArray(items) ? items : []).forEach((item) => {
         const { value, label } = toOption(item);
         if (!value && value !== 0) return;
         const v = String(value);
-        const opt = document.createElement('option');
-        opt.value = v;
-        opt.textContent = label;
-        if (prev.has(v)) opt.selected = true;
-        selectEl.appendChild(opt);
+        const lab = document.createElement('label');
+        lab.className = 'flex cursor-pointer items-start gap-2 rounded px-2 py-1.5 text-sm hover:bg-gray-700/80';
+        const input = document.createElement('input');
+        input.type = 'checkbox';
+        input.value = v;
+        input.className = 'filter-multidd-cb mt-0.5 shrink-0 rounded border-gray-600 bg-gray-900 text-blue-500 focus:ring-blue-500';
+        if (prev.has(v)) input.checked = true;
+        const span = document.createElement('span');
+        span.className = 'filter-multidd-cblabel min-w-0 flex-1 break-words leading-snug text-gray-200';
+        span.textContent = label;
+        lab.appendChild(input);
+        lab.appendChild(span);
+        listRoot.appendChild(lab);
+        input.addEventListener('change', () => updateFilterMultiddSummary(listRoot.closest('.filter-multidd')));
     });
+    const wrap = listRoot.closest('.filter-multidd');
+    updateFilterMultiddSummary(wrap);
+    applyMultiddListSearch(wrap);
 }
 
 function populateHistoryFilters(typeRows, picklists) {
-    repopulateMultiSelect(
-        document.getElementById('filterErrorTypes'),
+    repopulateCheckboxFilterList(
+        document.getElementById('filterErrorTypesList'),
         typeRows,
         (row) => ({
             value: row.id,
             label: `${(row.description || 'Тип').slice(0, 72)} (${row.count ?? 0})`,
         }),
     );
-    repopulateMultiSelect(
-        document.getElementById('filterSourceIps'),
-        picklists?.source_ips || [],
-        (ip) => ({ value: ip, label: ip }),
-    );
-    repopulateMultiSelect(
-        document.getElementById('filterDestinations'),
+    repopulateCheckboxFilterList(
+        document.getElementById('filterDestinationsList'),
         picklists?.destinations || [],
         (d) => ({ value: d, label: d }),
     );
+}
+
+function closeAllFilterMultiddPanels() {
+    document.querySelectorAll('.filter-multidd').forEach((wrap) => {
+        const panel = wrap.querySelector('.filter-multidd-panel');
+        const trigger = wrap.querySelector('.filter-multidd-trigger');
+        if (panel) panel.classList.add('hidden');
+        if (trigger) trigger.setAttribute('aria-expanded', 'false');
+    });
+}
+
+function initFilterMultiddUi() {
+    document.querySelectorAll('.filter-multidd').forEach((wrap) => {
+        const trigger = wrap.querySelector('.filter-multidd-trigger');
+        const panel = wrap.querySelector('.filter-multidd-panel');
+        if (!trigger || !panel) return;
+        trigger.addEventListener('click', (e) => {
+            e.stopPropagation();
+            const wasOpen = !panel.classList.contains('hidden');
+            closeAllFilterMultiddPanels();
+            if (!wasOpen) {
+                panel.classList.remove('hidden');
+                trigger.setAttribute('aria-expanded', 'true');
+                const searchInp = wrap.querySelector('.filter-multidd-search');
+                if (searchInp) {
+                    requestAnimationFrame(() => searchInp.focus());
+                }
+            }
+        });
+        const clearBtn = wrap.querySelector('.filter-multidd-clear');
+        if (clearBtn) {
+            clearBtn.addEventListener('click', (e) => {
+                e.stopPropagation();
+                wrap.querySelectorAll('.filter-multidd-list input[type="checkbox"]').forEach((cb) => {
+                    cb.checked = false;
+                });
+                const searchInp = wrap.querySelector('.filter-multidd-search');
+                if (searchInp) searchInp.value = '';
+                applyMultiddListSearch(wrap);
+                updateFilterMultiddSummary(wrap);
+            });
+        }
+        const searchInp = wrap.querySelector('.filter-multidd-search');
+        if (searchInp) {
+            searchInp.addEventListener('click', (e) => e.stopPropagation());
+            searchInp.addEventListener('input', () => applyMultiddListSearch(wrap));
+        }
+    });
+    document.addEventListener('click', () => {
+        closeAllFilterMultiddPanels();
+    });
+    document.querySelectorAll('.filter-multidd').forEach((wrap) => {
+        wrap.addEventListener('click', (e) => e.stopPropagation());
+    });
 }
 
 
@@ -519,10 +621,11 @@ window.copyDrawerRaw = function (idx) {
     navigator.clipboard.writeText(text).catch(() => {});
 };
 
-function appendMultiParam(params, key, selectEl) {
-    if (!selectEl) return;
-    Array.from(selectEl.selectedOptions).forEach((o) => {
-        if (o.value) params.append(key, o.value);
+function appendCheckedListParam(params, key, listRootId) {
+    const root = document.getElementById(listRootId);
+    if (!root) return;
+    root.querySelectorAll('input[type="checkbox"]:checked').forEach((cb) => {
+        if (cb.value) params.append(key, cb.value);
     });
 }
 
@@ -534,9 +637,10 @@ function buildHistoryUrl(append) {
     if (append && historyState.nextCursor) {
         params.set('cursor', historyState.nextCursor);
     }
-    appendMultiParam(params, 'error_type_id', document.getElementById('filterErrorTypes'));
-    appendMultiParam(params, 'source_ip', document.getElementById('filterSourceIps'));
-    appendMultiParam(params, 'destination', document.getElementById('filterDestinations'));
+    appendCheckedListParam(params, 'error_type_id', 'filterErrorTypesList');
+    const sip = document.getElementById('filterSourceIpSearch')?.value?.trim();
+    if (sip) params.set('source_ip', sip);
+    appendCheckedListParam(params, 'destination', 'filterDestinationsList');
     return `/api/history?${params.toString()}`;
 }
 
@@ -579,7 +683,7 @@ async function loadData(options = {}) {
         }
 
         let typeRows = [];
-        let picklists = { source_ips: [], destinations: [] };
+        let picklists = { destinations: [] };
         try {
             const optUrl = `/api/filter-options?period=${encodeURIComponent(period)}`;
             const [typesRes, optRes] = await Promise.all([
@@ -692,13 +796,19 @@ document.addEventListener('DOMContentLoaded', () => {
                 localStorage.setItem(LS_PERIOD, getSelectedPeriod());
             } catch (_) { /* ignore */ }
             closeErrorTypeDrawer();
+            closeAllFilterMultiddPanels();
             loadData({ resetPaging: true });
         });
     }
 
+    initFilterMultiddUi();
+
     const filterBtn = document.getElementById('filterApplyBtn');
     if (filterBtn) {
-        filterBtn.addEventListener('click', () => loadData({ resetPaging: true }));
+        filterBtn.addEventListener('click', () => {
+            closeAllFilterMultiddPanels();
+            loadData({ resetPaging: true });
+        });
     }
 
     const loadMoreBtn = document.getElementById('historyLoadMore');
@@ -728,6 +838,7 @@ document.addEventListener('DOMContentLoaded', () => {
     }
     document.addEventListener('keydown', (e) => {
         if (e.key === 'Escape') {
+            closeAllFilterMultiddPanels();
             closeErrorTypeDrawer();
         }
     });
