@@ -1,64 +1,71 @@
 # XrayPulse
 
-Веб-дашборд для анализа ошибок Xray из `error.log`.
+Веб-дашборд для анализа ошибок Xray из `error.log`: агрегаты, история, фильтры и обогащение IP.
 
 ## Возможности
 
-- Парсинг ошибок Xray (`IPv4/IPv6`) с нормализацией типов ошибок.
-- История событий в SQLite.
-- Топ причин ошибок и тренд по времени.
-- Детализация по типу ошибки (события, source/destination, raw message).
-- Обогащение IP-профиля (location/owner/asn) с кэшем и дневным лимитом.
-- Фоновое обновление логов через scheduler.
+- Парсинг строк `error.log` (IPv4/IPv6, SNI/sslip.io и др.) и нормализация типов ошибок в SQLite.
+- **История** с пагинацией, фильтрами по типу ошибки, **поиск по IP источника**, **inbound/цель**.
+- KPI по выбранным фильтрам, топ причин ошибок, тренд по времени.
+- Детализация по типу ошибки.
+- Обогащение IP (location/owner/asn) с кэшем в БД и **дневным лимитом** внешних запросов(https://ipwho.is).
+- **Вход через форму** (`/login`), сессия Flask, **лимит неудачных попыток** с блокировкой по IP.
 
 ## Стек
 
 - Python 3.10+
-- Flask
-- APScheduler
-- python-dotenv
-- flask-httpauth
+- Flask, python-dotenv, APScheduler
 - SQLite
+- UI: Chart.js, Tailwind (CDN)
 
 ## Быстрый старт
 
-1. Создайте и активируйте виртуальное окружение.
-2. Установите зависимости:
+1. Создайте виртуальное окружение и установите зависимости:
 
 ```bash
+python -m venv .venv
 pip install -r requirements.txt
 ```
 
-3. Скопируйте `.env.example` в `.env` и заполните значения.
-4. Запустите приложение:
+2. Скопируйте `.env.example` в `.env` и задайте как минимум **`DASHBOARD_USER`**, **`DASHBOARD_PASS`**, путь **`ERROR_LOG_PATH`**. Для прода задайте **`FLASK_SECRET_KEY`** (иначе при перезапуске сбросятся сессии).
+
+3. Запуск:
 
 ```bash
 python app.py
 ```
 
-5. Откройте:
-
-- [http://127.0.0.1:5000](http://127.0.0.1:5000)
+4. Откройте в браузере: [http://127.0.0.1:5000](http://127.0.0.1:5000) — при включённой авторизации откроется страница входа, затем дашборд.
 
 ## Переменные окружения
 
-- `AUTH_ENABLED` — включить Basic Auth (`true/false`)
-- `DASHBOARD_USER` — логин
-- `DASHBOARD_PASS` — пароль
-- `ERROR_LOG_PATH` — путь к логу Xray
-- `GEO_LOOKUP_ENABLED` — включить IP enrichment (`true/false`)
-- `GEO_LOOKUP_DAILY_LIMIT` — дневной лимит внешних lookup запросов
+Полный список с комментариями — в **`.env.example`**. Кратко:
 
-## Структура
+| Переменная | Назначение |
+|------------|------------|
+| `AUTH_ENABLED` | Включить вход и защиту маршрутов (`true` / `false`) |
+| `DASHBOARD_USER` / `DASHBOARD_PASS` | Учётная запись дашборда |
+| `FLASK_SECRET_KEY` | Секрет подписи cookie сессии |
+| `AUTH_LOCKOUT_MAX_ATTEMPTS` / `AUTH_LOCKOUT_SECONDS` | Блокировка `/login` после неудачных попыток с одного IP |
+| `AUTH_TRUST_X_FORWARDED` | За reverse-proxy(nginx): брать IP клиента из `X-Forwarded-For` |
+| `ERROR_LOG_PATH` | Путь к `error.log` Xray |
+| `ERROR_LOG_SKIP_HISTORY` / `ERROR_LOG_LINE_MARKERS` | Поведение первого чтения и фильтр строк по подстрокам |
+| `GEO_LOOKUP_ENABLED` / `GEO_LOOKUP_DAILY_LIMIT` | Внешний IP lookup и лимит в день |
+| `MONITOR_JOB_LOG_*` | Путь и ротация служебного лога приложения |
 
-- `app.py` — Flask API и scheduler
-- `parser.py` — парсинг и нормализация ошибок Xray
-- `database.py` — схема БД, агрегации, кэш профилей IP
-- `templates/index.html` — UI
-- `static/js/app.js` — клиентская логика и визуализация
+Загрузка `.env` выполняется с **`override=True`**: значения из файла перекрывают уже заданные в окружении ОС/IDE переменные с тем же именем (удобно, если `AUTH_ENABLED` случайно задан снаружи).
+
+## Структура проекта
+
+- `app.py` — Flask-приложение: маршруты, сессия, `/login`, API, scheduler
+- `parser.py` — разбор строк лога и нормализация
+- `database.py` — SQLite: события, агрегаты, история, кэш IP
+- `templates/index.html` — дашборд
+- `templates/login.html` — страница входа
+- `static/js/app.js` — загрузка данных, графики, таблица, фильтры
 
 ## Примечания
 
-- База данных создается автоматически: `xray_monitor.db`.
-- Для локальной отладки можно отключить auth: `AUTH_ENABLED=false`.
-- Для прод-окружения рекомендуется оставить `AUTH_ENABLED=true`.
+- База создаётся автоматически: **`xray_monitor.db`** (рядом с приложением, если не менять логику путей).
+- Для локальной отладки без пароля: **`AUTH_ENABLED=false`** в `.env`.
+- За **nginx** с TLS обычно нужны **`AUTH_TRUST_X_FORWARDED=true`** (корректный IP для блокировки входа) и проксирование заголовков; приложение слушает по умолчанию `127.0.0.1:5000` — см. `app.py` для смены хоста/порта.
