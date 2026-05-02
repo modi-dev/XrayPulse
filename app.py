@@ -3,6 +3,9 @@ import sqlite3
 import json
 import ipaddress
 import logging
+import time
+import base64
+import re
 from logging.handlers import RotatingFileHandler
 from datetime import datetime
 from urllib.request import urlopen
@@ -18,6 +21,8 @@ from database import (
     get_aggregated_history,
     cleanup_old_logs,
     get_history_records,
+    get_history_summary,
+    get_filter_picklists,
     get_events_by_error_type,
     get_cached_ip_profile,
     upsert_ip_profile,
@@ -56,6 +61,60 @@ def init_monitor_job_file_logging():
     h.setFormatter(logging.Formatter("%(message)s"))
     lg.addHandler(h)
     _MONITOR_JOB_LOGGER = lg
+
+
+def xray_timestamp_to_iso(ts):
+    """Нормализует время из лога Xray (YYYY/MM/DD ...) в ISO 8601 без смещения часового пояса."""
+    if not ts or not isinstance(ts, str):
+        return ts
+    s = ts.strip()
+    if re.match(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}", s):
+        return s
+    normalized = s.replace("/", "-")
+    try:
+        if "." in normalized:
+            head, frac = normalized.split(".", 1)
+            frac = (frac + "000000")[:6]
+            dt = datetime.strptime(f"{head}.{frac}", "%Y-%m-%d %H:%M:%S.%f")
+        else:
+            dt = datetime.strptime(normalized, "%Y-%m-%d %H:%M:%S")
+    except ValueError:
+        return normalized.replace(" ", "T")
+    return dt.isoformat(timespec="microseconds")
+
+
+def _encode_history_cursor(ts, rowid):
+    payload = json.dumps({"ts": ts, "rid": int(rowid)}, separators=(",", ":"))
+    return base64.urlsafe_b64encode(payload.encode("utf-8")).decode("ascii").rstrip("=")
+
+
+def _decode_history_cursor(token):
+    if not token or not isinstance(token, str):
+        return None, None
+    pad = "=" * (-len(token) % 4)
+    try:
+        raw = base64.urlsafe_b64decode(token + pad)
+        data = json.loads(raw.decode("utf-8"))
+        return data.get("ts"), int(data["rid"])
+    except (ValueError, json.JSONDecodeError, KeyError, TypeError):
+        return None, None
+
+
+def _format_history_row(row):
+    """Добавляет ISO-время; поле time — единый формат для API."""
+    out = dict(row)
+    raw_ts = out.get("time")
+    if raw_ts:
+        out["time"] = xray_timestamp_to_iso(raw_ts)
+    return out
+
+
+def _format_event_row(row):
+    out = dict(row)
+    ts = out.get("timestamp")
+    if ts:
+        out["timestamp"] = xray_timestamp_to_iso(ts)
+    return out
 
 
 def log_message(message):
@@ -145,6 +204,7 @@ init_db()
 def update_logs_job():
     """Функция, которая будет бегать в фоне"""
     log_message("--- Начинается фоновое обновление логов ---")
+    t0 = time.perf_counter()
     try:
         path = error_log_path()
         off, ino = get_error_log_ingestion_state(path)
@@ -154,12 +214,20 @@ def update_logs_job():
             save_errors(new_logs)
         set_error_log_ingestion_state(path, new_off, new_ino)
         cleanup_old_logs(days=7)
+        elapsed_ms = int((time.perf_counter() - t0) * 1000)
         if new_logs:
-            log_message(f"Сохранено событий: {len(new_logs)}; смещение в логе (байт): {new_off}.")
+            log_message(
+                f"Сохранено событий: {len(new_logs)}; смещение в логе (байт): {new_off}. "
+                f"METRIC ingest duration_ms={elapsed_ms} saved={len(new_logs)}"
+            )
         else:
-            log_message("Новых завершённых строк под фильтры не найдено (или только неполная строка в конце файла).")
+            log_message(
+                "Новых завершённых строк под фильтры не найдено (или только неполная строка в конце файла). "
+                f"METRIC ingest duration_ms={elapsed_ms} saved=0"
+            )
     except Exception as e:
-        log_message(f"КРИТИЧЕСКАЯ ОШИБКА в фоновом задании: {e}")
+        elapsed_ms = int((time.perf_counter() - t0) * 1000)
+        log_message(f"КРИТИЧЕСКАЯ ОШИБКА в фоновом задании: {e} METRIC ingest duration_ms={elapsed_ms} saved=0 error=1")
 
 def resolve_ip_profile(ip):
     """Возвращает профиль IP: location/owner/asn/network_type."""
@@ -260,12 +328,15 @@ def index():
 @app.route('/api/update')
 @auth_required
 def update_stats():
+    t0 = time.perf_counter()
     path = error_log_path()
     off, ino = get_error_log_ingestion_state(path)
     current_stats, new_off, new_ino = read_new_error_log_events(path, off, ino)
     if current_stats:
         save_errors(current_stats)
     set_error_log_ingestion_state(path, new_off, new_ino)
+    elapsed_ms = int((time.perf_counter() - t0) * 1000)
+    log_message(f"METRIC api_update duration_ms={elapsed_ms} ingested={len(current_stats)}")
     return jsonify({"status": "success", "ingested": len(current_stats)})
 
 @app.route('/api/recent')
@@ -274,7 +345,7 @@ def api_recent():
     from database import get_latest_logs
     data = get_latest_logs(30) # Последние 30 событий
     return jsonify([{
-        "time": r[0],
+        "time": xray_timestamp_to_iso(r[0]) if r[0] else None,
         "type": r[1],
         "desc": r[2]
     } for r in data])
@@ -283,9 +354,38 @@ def api_recent():
 @auth_required
 def api_history():
     try:
+        t0 = time.perf_counter()
         period = request.args.get('period', '7d')
-        rows = get_history_records(500, period)
+        try:
+            limit = min(int(request.args.get('limit', 500)), 2000)
+        except ValueError:
+            limit = 500
+        error_type_ids = request.args.getlist('error_type_id')
+        source_ips = request.args.getlist('source_ip')
+        destination_keys = request.args.getlist('destination')
+        cursor_token = request.args.get('cursor')
+
+        cur_ts, cur_rid = _decode_history_cursor(cursor_token)
+
+        rows, has_more = get_history_records(
+            limit=limit,
+            period=period,
+            error_type_ids=error_type_ids or None,
+            source_ips=source_ips or None,
+            destination_keys=destination_keys or None,
+            cursor_ts=cur_ts,
+            cursor_rowid=cur_rid,
+        )
+        summary = get_history_summary(
+            period=period,
+            error_type_ids=error_type_ids or None,
+            source_ips=source_ips or None,
+            destination_keys=destination_keys or None,
+        )
+
+        formatted = []
         for row in rows:
+            row = _format_history_row(row)
             source_profile = resolve_ip_profile(row.get("source"))
             row["source_location"] = source_profile.get("location")
             row["source_owner"] = source_profile.get("owner")
@@ -294,10 +394,41 @@ def api_history():
             dest_profile = resolve_ip_profile(row.get("destination_host"))
             row["destination_owner"] = dest_profile.get("owner")
             row["destination_asn"] = dest_profile.get("asn")
-        return jsonify(rows)
+            formatted.append(row)
+
+        next_cursor = None
+        if has_more and rows:
+            next_cursor = _encode_history_cursor(rows[-1]["time"], rows[-1]["event_id"])
+
+        elapsed_ms = int((time.perf_counter() - t0) * 1000)
+        log_message(
+            "METRIC api_history "
+            f"duration_ms={elapsed_ms} rows={len(formatted)} limit={limit} period={period} "
+            f"has_more={int(has_more)} etypes={len(error_type_ids)} "
+            f"srcs={len(source_ips)} dests={len(destination_keys)}"
+        )
+
+        return jsonify({
+            "events": formatted,
+            "next_cursor": next_cursor,
+            "has_more": has_more,
+            "summary": summary,
+            "limit": limit,
+        })
     except Exception as e:
         print(f"Unexpected Error fetching history: {e}") # Добавлено логирование для дебага
         return jsonify({"error": f"An unexpected error occurred: {str(e)}", "details": "Обратитесь к администратору."}), 500
+
+@app.route('/api/filter-options')
+@auth_required
+def api_filter_options():
+    try:
+        period = request.args.get('period', '7d')
+        return jsonify(get_filter_picklists(period))
+    except Exception as e:
+        print(f"Error filter-options: {e}")
+        return jsonify({"error": str(e)}), 500
+
 
 @app.route('/api/error-types')
 @auth_required
@@ -321,7 +452,9 @@ def api_error_type_events(error_type_id):
     try:
         period = request.args.get('period', '7d')
         rows = get_events_by_error_type(error_type_id, 200, period)
+        out = []
         for row in rows:
+            row = _format_event_row(row)
             source_profile = resolve_ip_profile(row.get("source_ip"))
             row["source_location"] = source_profile.get("location")
             row["source_owner"] = source_profile.get("owner")
@@ -330,7 +463,8 @@ def api_error_type_events(error_type_id):
             dest_profile = resolve_ip_profile(row.get("destination_host"))
             row["destination_owner"] = dest_profile.get("owner")
             row["destination_asn"] = dest_profile.get("asn")
-        return jsonify(rows)
+            out.append(row)
+        return jsonify(out)
     except Exception as e:
         print(f"Error fetching events by type: {e}")
         return jsonify({"error": str(e)}), 500

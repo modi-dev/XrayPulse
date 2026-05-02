@@ -194,17 +194,150 @@ def get_aggregated_history(period='7d'):
         ''', (since,))
         return cursor.fetchall()
 
-def get_history_records(limit=500, period='7d'):
+def _int_list(values):
+    if not values:
+        return []
+    if not isinstance(values, (list, tuple)):
+        values = [values]
+    out = []
+    for x in values:
+        try:
+            out.append(int(str(x).strip()))
+        except (ValueError, TypeError):
+            continue
+    return out
+
+
+def _str_list(values):
+    if not values:
+        return []
+    if not isinstance(values, (list, tuple)):
+        values = [values]
+    return [str(x).strip() for x in values if x is not None and str(x).strip()]
+
+
+def _destination_key_sql():
+    """Выражение inbound/цели (совпадает с полем destination в выборке истории)."""
+    return (
+        "CASE WHEN e.destination_port IS NOT NULL "
+        "THEN e.destination_host || ':' || CAST(e.destination_port AS TEXT) "
+        "ELSE COALESCE(e.destination_host, 'direct/api') END"
+    )
+
+
+def _history_filter_sql(period, error_type_ids=None, source_ips=None, destination_keys=None):
+    """WHERE для истории: период + опционально несколько типов, IP, целей."""
     since = _period_to_since(period)
+    clauses = ["datetime(replace(e.timestamp, '/', '-')) >= datetime(?)"]
+    params = [since]
+
+    et_ids = _int_list(error_type_ids)
+    if et_ids:
+        ph = ",".join("?" * len(et_ids))
+        clauses.append(f"e.error_type_id IN ({ph})")
+        params.extend(et_ids)
+
+    ips = _str_list(source_ips)
+    if ips:
+        ph = ",".join("?" * len(ips))
+        clauses.append(f"COALESCE(e.source_ip, 'Client') IN ({ph})")
+        params.extend(ips)
+
+    dests = _str_list(destination_keys)
+    if dests:
+        ph = ",".join("?" * len(dests))
+        clauses.append(f"({_destination_key_sql()}) IN ({ph})")
+        params.extend(dests)
+
+    return " AND ".join(clauses), params
+
+
+def get_history_summary(period='7d', error_type_ids=None, source_ips=None, destination_keys=None):
+    """Агрегаты по отфильтрованной выборке (для KPI)."""
+    where_sql, params = _history_filter_sql(period, error_type_ids, source_ips, destination_keys)
+    with sqlite3.connect('xray_monitor.db') as conn:
+        row = conn.execute(
+            f'''
+            SELECT
+                COUNT(*) AS total,
+                COUNT(DISTINCT e.error_type_id) AS types,
+                COUNT(DISTINCT COALESCE(e.source_ip, '')) AS sources
+            FROM error_events e
+            JOIN error_types t ON t.id = e.error_type_id
+            WHERE {where_sql}
+            ''',
+            params,
+        ).fetchone()
+    return {"total": int(row[0]), "distinct_types": int(row[1]), "distinct_sources": int(row[2])}
+
+
+def get_filter_picklists(period='7d', limit=400):
+    """Уникальные значения для выпадающих фильтров за период."""
+    since = _period_to_since(period)
+    with sqlite3.connect('xray_monitor.db') as conn:
+        cur = conn.cursor()
+        key_sql = _destination_key_sql()
+        cur.execute(
+            f'''
+            SELECT DISTINCT dst FROM (
+                SELECT {key_sql} AS dst
+                FROM error_events e
+                WHERE datetime(replace(e.timestamp, '/', '-')) >= datetime(?)
+            )
+            WHERE dst != ''
+            ORDER BY dst
+            LIMIT ?
+            ''',
+            (since, limit),
+        )
+        destinations = [r[0] for r in cur.fetchall()]
+
+        cur.execute(
+            '''
+            SELECT DISTINCT COALESCE(e.source_ip, 'Client') AS sip
+            FROM error_events e
+            WHERE datetime(replace(e.timestamp, '/', '-')) >= datetime(?)
+            ORDER BY sip
+            LIMIT ?
+            ''',
+            (since, limit),
+        )
+        source_ips = [r[0] for r in cur.fetchall()]
+    return {"destinations": destinations, "source_ips": source_ips}
+
+
+def get_history_records(
+    limit=500,
+    period='7d',
+    error_type_ids=None,
+    source_ips=None,
+    destination_keys=None,
+    cursor_ts=None,
+    cursor_rowid=None,
+):
+    """
+    История с фильтрами и keyset-пагинацией по (timestamp DESC, rowid DESC).
+    Возвращает (rows, has_more) где rows — не более limit элементов.
+    """
+    where_sql, params = _history_filter_sql(period, error_type_ids, source_ips, destination_keys)
+    if cursor_ts is not None and cursor_rowid is not None:
+        where_sql = (
+            f"({where_sql}) AND (e.timestamp < ? OR (e.timestamp = ? AND e.rowid < ?))"
+        )
+        params = list(params) + [cursor_ts, cursor_ts, int(cursor_rowid)]
+
+    fetch_n = int(limit) + 1
     with sqlite3.connect('xray_monitor.db') as conn:
         conn.row_factory = sqlite3.Row
         cursor = conn.cursor()
-        cursor.execute('''
+        cursor.execute(
+            f'''
             SELECT
+                e.rowid AS event_id,
                 e.timestamp AS time,
                 COALESCE(e.source_ip, 'Client') AS source,
                 CASE
-                    WHEN e.destination_port IS NOT NULL THEN e.destination_host || ':' || e.destination_port
+                    WHEN e.destination_port IS NOT NULL THEN e.destination_host || ':' || CAST(e.destination_port AS TEXT)
                     ELSE COALESCE(e.destination_host, 'direct/api')
                 END AS destination,
                 t.id AS error_type_id,
@@ -215,11 +348,18 @@ def get_history_records(limit=500, period='7d'):
                 e.destination_port
             FROM error_events e
             JOIN error_types t ON t.id = e.error_type_id
-            WHERE datetime(replace(e.timestamp, '/', '-')) >= datetime(?)
-            ORDER BY e.timestamp DESC
+            WHERE {where_sql}
+            ORDER BY e.timestamp DESC, e.rowid DESC
             LIMIT ?
-        ''', (since, limit))
-        return [dict(row) for row in cursor.fetchall()]
+            ''',
+            (*params, fetch_n),
+        )
+        rows = [dict(row) for row in cursor.fetchall()]
+
+    has_more = len(rows) > limit
+    if has_more:
+        rows = rows[:limit]
+    return rows, has_more
 
 def get_events_by_error_type(error_type_id, limit=200, period='7d'):
     since = _period_to_since(period)
@@ -228,6 +368,7 @@ def get_events_by_error_type(error_type_id, limit=200, period='7d'):
         cursor = conn.cursor()
         cursor.execute('''
             SELECT
+                e.rowid AS event_id,
                 e.timestamp,
                 e.source_ip,
                 e.source_port,

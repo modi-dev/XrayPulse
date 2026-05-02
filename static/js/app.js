@@ -3,13 +3,43 @@
 // responsible for fetching data, rendering charts, and populating dashboard cards.
 // ===============================================
 
-let refreshTimer = null;
+const LS_PERIOD = 'xraypulse_period';
+const LS_REFRESH = 'xraypulse_refresh_ms';
+
+let dashboardRefreshIntervalId = null;
 // Инстансы для Chart.js, чтобы их можно было уничтожать и пересоздавать при обновлении данных
-let mainChartInstance = null; 
+let mainChartInstance = null;
+
+/** Состояние пагинации /api/history (первая страница + «ещё»). */
+const historyState = {
+    items: [],
+    nextCursor: null,
+    hasMore: false,
+    summary: null,
+};
+
+/** Защита от параллельных loadData (двойной «Загрузить ещё», таймер + кнопка). */
+let historyLoadLocked = false;
 
 function getSelectedPeriod() {
     const select = document.getElementById('periodFilter');
     return select?.value || '7d';
+}
+
+function escapeHtmlText(s) {
+    return String(s ?? '')
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;');
+}
+
+function formatDisplayTime(isoOrLegacy) {
+    if (!isoOrLegacy || typeof isoOrLegacy !== 'string') return '';
+    const d = new Date(isoOrLegacy);
+    if (!Number.isNaN(d.getTime())) {
+        return d.toLocaleString('ru-RU', { hour12: false, year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', second: '2-digit' });
+    }
+    return isoOrLegacy;
 }
 
 function ownerBadge(owner, asn = null) {
@@ -85,6 +115,10 @@ function renderMainChart(data) {
     const bucketMap = new Map();
     const parseLogTime = (value) => {
         if (!value || typeof value !== 'string') return null;
+        if (value.includes('T') && /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}/.test(value)) {
+            const d = new Date(value);
+            return Number.isNaN(d.getTime()) ? null : d;
+        }
         const m = value.match(
             /^(\d{4})[/-](\d{2})[/-](\d{2}) (\d{2}):(\d{2}):(\d{2})(?:\.(\d{1,6}))?$/
         );
@@ -230,37 +264,30 @@ function renderMainChart(data) {
 }
 
 /**
- * 2. Таблица топа причин (Причина | Количество)
+ * 2. Таблица топа причин — из агрегата API /api/error-types (весь период, не только текущая страница истории).
  */
-function renderTypeChart(data) {
+function renderTypeChartFromApi(aggregatedRows) {
     const container = document.getElementById('typeSummary');
     if (!container) return;
 
-    const typeCounts = new Map();
-
-    data.filter(item => item && typeof item.type === 'string').forEach(item => {
-        const key = `${item.error_type_id || 0}|${item.type || 'UNKNOWN'}|${item.desc || 'Нет описания'}`;
-        if (!typeCounts.has(key)) {
-            typeCounts.set(key, 0);
-        }
-        typeCounts.set(key, typeCounts.get(key) + 1);
-    });
-
-    const sortedTypes = Array.from(typeCounts.entries()).sort((a, b) => b[1] - a[1]);
-    const topTypes = sortedTypes.slice(0, 8);
+    const rows = Array.isArray(aggregatedRows) ? aggregatedRows : [];
+    const topTypes = rows.slice(0, 12);
 
     if (!topTypes.length) {
         container.innerHTML = '<div class="text-gray-400">Нет данных по ошибкам.</div>';
         return;
     }
 
-    const rowsHtml = topTypes.map(([key, count], idx) => {
-        const [typeId, errorType, description] = key.split('|');
-        const safeErrorType = JSON.stringify(errorType || '');
+    const rowsHtml = topTypes.map((row, idx) => {
+        const typeId = row.id;
+        const errorType = row.error_type || '';
+        const description = row.description || 'Нет описания';
+        const count = row.count ?? 0;
+        const safeErrorType = JSON.stringify(errorType);
         return `
-            <button class="w-full text-left grid grid-cols-[40px_minmax(220px,1fr)_minmax(320px,2fr)_110px] gap-3 px-3 py-2 rounded hover:bg-gray-700/60 transition border border-gray-700 items-start"
+            <button type="button" class="w-full text-left grid grid-cols-[40px_minmax(220px,1fr)_minmax(320px,2fr)_110px] gap-3 px-3 py-2 rounded hover:bg-gray-700/60 transition border border-gray-700 items-start"
                 onclick='showErrorTypeDetails(${Number(typeId)}, ${safeErrorType})'
-                title="${errorType}">
+                >
                 <span class="text-xs text-gray-400">${idx + 1}</span>
                 <span class="text-sm text-gray-300 whitespace-normal break-words leading-snug">${description}</span>
                 <span class="text-sm text-gray-100 whitespace-normal break-words leading-snug">${errorType}</span>
@@ -277,33 +304,64 @@ function renderTypeChart(data) {
     `;
 }
 
+function selectedOptionValues(selectEl) {
+    if (!selectEl) return new Set();
+    return new Set(Array.from(selectEl.selectedOptions).map((o) => o.value).filter(Boolean));
+}
 
 /**
- * 3. Обновление KPI Карточек (Dashboard Overview).
+ * Перезаполняет select[multiple], сохраняя выбор, если значения ещё есть в новом списке.
  */
-function updateKpiCards(data) {
-    const rows = Array.isArray(data) ? data : [];
-    const totalLogs = rows.length;
-    const sources = new Set();
-    const uniqueTypes = new Set();
+function repopulateMultiSelect(selectEl, items, toOption) {
+    if (!selectEl) return;
+    const prev = selectedOptionValues(selectEl);
+    selectEl.innerHTML = '';
+    (Array.isArray(items) ? items : []).forEach((item) => {
+        const { value, label } = toOption(item);
+        if (!value && value !== 0) return;
+        const v = String(value);
+        const opt = document.createElement('option');
+        opt.value = v;
+        opt.textContent = label;
+        if (prev.has(v)) opt.selected = true;
+        selectEl.appendChild(opt);
+    });
+}
 
+function populateHistoryFilters(typeRows, picklists) {
+    repopulateMultiSelect(
+        document.getElementById('filterErrorTypes'),
+        typeRows,
+        (row) => ({
+            value: row.id,
+            label: `${(row.description || 'Тип').slice(0, 72)} (${row.count ?? 0})`,
+        }),
+    );
+    repopulateMultiSelect(
+        document.getElementById('filterSourceIps'),
+        picklists?.source_ips || [],
+        (ip) => ({ value: ip, label: ip }),
+    );
+    repopulateMultiSelect(
+        document.getElementById('filterDestinations'),
+        picklists?.destinations || [],
+        (d) => ({ value: d, label: d }),
+    );
+}
+
+
+/**
+ * 3. Обновление KPI (агрегаты с бэкенда по фильтрам периода).
+ */
+function updateKpiCards(summary) {
+    const s = summary && typeof summary === 'object' ? summary : {};
     const totalElement = document.getElementById('kpi-total-logs');
     const newErrorsElement = document.getElementById('kpi-new-errors');
     const criticalErrorElement = document.getElementById('kpi-critical-errors');
 
-    if (totalElement) totalElement.innerText = totalLogs;
-
-    rows.forEach((item) => {
-        if (!item) return;
-        if (item.source) {
-            sources.add(item.source);
-        }
-        const typeKey = `${item.error_type_id || 0}|${item.type || 'UNKNOWN'}`;
-        uniqueTypes.add(typeKey);
-    });
-
-    if (newErrorsElement) newErrorsElement.innerText = uniqueTypes.size;
-    if (criticalErrorElement) criticalErrorElement.innerText = sources.size;
+    if (totalElement) totalElement.innerText = s.total ?? '—';
+    if (newErrorsElement) newErrorsElement.innerText = s.distinct_types ?? '—';
+    if (criticalErrorElement) criticalErrorElement.innerText = s.distinct_sources ?? '—';
 }
 
 /**
@@ -314,6 +372,7 @@ function renderTable(rawData) {
     if (!tbody) return;
 
     const groupedData = groupLogs(rawData);
+    window.__lastHistoryGroups = groupedData;
 
     // Очистка перед рендерингом
     tbody.innerHTML = ''; 
@@ -326,11 +385,11 @@ function renderTable(rawData) {
 
         const row = document.createElement('tr');
         row.className = 'border-b border-gray-700 hover:bg-gray-750 transition cursor-pointer group';
-        row.setAttribute('onclick', `toggleDetails(${index})`);
+        row.setAttribute('onclick', `handleHistoryRowClick(event, ${index})`);
         
         // Используем Template literals для чистой вставки HTML
         row.innerHTML = `
-            <td class="px-4 py-3 text-xs text-blue-300 font-mono">${group.time}</td>
+            <td class="px-4 py-3 text-xs text-blue-300 font-mono whitespace-nowrap">${formatDisplayTime(group.time)}</td>
             <td class="px-4 py-3 text-xs text-green-400 font-mono">
                 <div class="whitespace-normal break-words">${group.source}</div>
                 ${group.source_location ? `<div class="text-[11px] text-gray-400 mt-1">${group.source_location}</div>` : ''}
@@ -345,6 +404,9 @@ function renderTable(rawData) {
                 </div>
             </td>
             <td class="px-4 py-3 text-sm text-gray-300">${group.desc}</td>
+            <td class="px-4 py-3 text-center align-top">
+                <button type="button" class="copy-raw-btn text-xs text-cyan-400 hover:text-cyan-200 underline" data-group-index="${index}" data-inst-index="0">Копировать</button>
+            </td>
         `;
         tbody.appendChild(row);
 
@@ -354,16 +416,17 @@ function renderTable(rawData) {
         detailsSection.className = 'hidden bg-black/30 border-b border-gray-800';
         
         // Генерация списка всех инцидентов в группе
-        const instancesHtml = group.instances.map(inst => `
-            <div class="flex justify-between items-center py-1 border-b border-gray-800/50 last:border-0 hover:text-gray-200 text-xs">
-                <span class="font-mono text-blue-400/80 w-36 truncate">${inst.time ? inst.time.split(' ')[1] || 'Нет времени' : 'N/A'}</span>
-                <span class="font-mono text-green-500/70 w-36 truncate">${inst.source}</span>
-                <span class="font-mono text-gray-500 flex-1 ml-4 truncate">${inst.type}</span>
+        const instancesHtml = group.instances.map((inst, j) => `
+            <div class="flex flex-wrap gap-2 items-center py-1 border-b border-gray-800/50 last:border-0 hover:text-gray-200 text-xs">
+                <span class="font-mono text-blue-400/80 shrink-0">${formatDisplayTime(inst.time)}</span>
+                <span class="font-mono text-green-500/70 shrink-0">${inst.source}</span>
+                <span class="font-mono text-gray-500 flex-1 min-w-0 truncate">${inst.type}</span>
+                <button type="button" class="copy-raw-btn shrink-0 text-cyan-400 hover:text-cyan-200 underline" data-group-index="${index}" data-inst-index="${j}">Копировать</button>
             </div>
         `).join('');
 
         detailsSection.innerHTML = `
-            <td colspan="5" class="px-6 py-4">
+            <td colspan="6" class="px-6 py-4">
                 <div class="text-[11px] text-gray-400 mb-2 uppercase font-bold tracking-wider">Все ${group.count} вхождения этой группы:</div
                 ><div class="max-h-40 overflow-y-auto space-y-1 pr-2 custom-scrollbar">${instancesHtml}</div>
             </td>
@@ -376,6 +439,11 @@ function renderTable(rawData) {
 window.toggleDetails = function(index) {
     const el = document.getElementById(`details-${index}`);
     if (el) el.classList.toggle('hidden');
+};
+
+window.handleHistoryRowClick = function (ev, index) {
+    if (ev && ev.target && ev.target.closest('.copy-raw-btn')) return;
+    window.toggleDetails(index);
 };
 
 window.openErrorTypeDrawer = function() {
@@ -413,10 +481,11 @@ window.showErrorTypeDetails = async function(errorTypeId, errorTypeName = '') {
             return;
         }
 
+        window.__lastDrawerEvents = events;
         detailsBody.innerHTML = events.map((evt, idx) => `
             <div class="py-3 border-b border-gray-700 last:border-0">
-                <button class="w-full text-left" onclick="toggleRawMessage(${idx})">
-                    <div class="text-sm text-blue-300 font-mono">${evt.timestamp || 'N/A'}</div>
+                <button type="button" class="w-full text-left" onclick="toggleRawMessage(${idx})">
+                    <div class="text-sm text-blue-300 font-mono">${formatDisplayTime(evt.timestamp) || 'N/A'}</div>
                     <div class="text-sm text-gray-200 mt-1">Источник: ${evt.source_ip || 'N/A'}${evt.source_port ? ':' + evt.source_port : ''}</div>
                     ${evt.source_location ? `<div class="text-sm text-gray-400">Локация: ${evt.source_location}</div>` : ''}
                     ${evt.source_owner ? `<div class="text-sm text-blue-300">Owner: ${evt.source_owner}</div>` : ''}
@@ -426,8 +495,11 @@ window.showErrorTypeDetails = async function(errorTypeId, errorTypeName = '') {
                     ${evt.destination_owner ? `<div class="mt-1">${ownerBadge(evt.destination_owner, evt.destination_asn)}</div>` : ''}
                     <div class="text-xs text-blue-400 mt-1">Показать исходное сообщение</div>
                 </button>
+                <div class="mt-2 flex justify-end">
+                    <button type="button" class="text-xs text-cyan-400 hover:text-cyan-200 underline" onclick="copyDrawerRaw(${idx})">Копировать сырую строку</button>
+                </div>
                 <div id="raw-msg-${idx}" class="hidden text-sm text-gray-400 mt-2 break-words bg-gray-800/70 rounded p-2 border border-gray-700">
-                    ${evt.raw_message || 'Нет исходного сообщения'}
+                    ${escapeHtmlText(evt.raw_message || 'Нет исходного сообщения')}
                 </div>
             </div>
         `).join('');
@@ -441,59 +513,215 @@ window.toggleRawMessage = function(index) {
     if (block) block.classList.toggle('hidden');
 };
 
+window.copyDrawerRaw = function (idx) {
+    const text = window.__lastDrawerEvents?.[idx]?.raw_message;
+    if (!text) return;
+    navigator.clipboard.writeText(text).catch(() => {});
+};
+
+function appendMultiParam(params, key, selectEl) {
+    if (!selectEl) return;
+    Array.from(selectEl.selectedOptions).forEach((o) => {
+        if (o.value) params.append(key, o.value);
+    });
+}
+
+function buildHistoryUrl(append) {
+    const period = getSelectedPeriod();
+    const params = new URLSearchParams();
+    params.set('period', period);
+    params.set('limit', '500');
+    if (append && historyState.nextCursor) {
+        params.set('cursor', historyState.nextCursor);
+    }
+    appendMultiParam(params, 'error_type_id', document.getElementById('filterErrorTypes'));
+    appendMultiParam(params, 'source_ip', document.getElementById('filterSourceIps'));
+    appendMultiParam(params, 'destination', document.getElementById('filterDestinations'));
+    return `/api/history?${params.toString()}`;
+}
 
 /**
  * 5. Основная асинхронная функция загрузки данных (CORE LOGIC)
+ * @param {{ append?: boolean, resetPaging?: boolean }} options
  */
-async function loadData() {
-    // --- Запрос данных с бэкенда ---
+async function loadData(options = {}) {
+    if (historyLoadLocked) {
+        return;
+    }
+    const append = Boolean(options.append);
+    const resetPaging = options.resetPaging !== false;
+
+    if (append && !historyState.nextCursor) {
+        return;
+    }
+
+    historyLoadLocked = true;
+    const loadMoreBtn = document.getElementById('historyLoadMore');
+    if (loadMoreBtn && append) {
+        loadMoreBtn.disabled = true;
+    }
+
     try {
         console.time('API_FETCH');
         const period = getSelectedPeriod();
-        const response = await fetch(`/api/history?period=${encodeURIComponent(period)}`);
-        if (!response.ok) throw new Error(`Ошибка сервера: ${response.status}`);
-        
-        const data = await response.json();
+        if (!append && resetPaging) {
+            historyState.nextCursor = null;
+        }
+        const historyUrl = buildHistoryUrl(append);
+        const typesUrl = `/api/error-types?period=${encodeURIComponent(period)}`;
+
+        const histRes = await fetch(historyUrl);
+        if (!histRes.ok) throw new Error(`Ошибка сервера: ${histRes.status}`);
+        const payload = await histRes.json();
+
+        if (payload.error) {
+            throw new Error(payload.error || 'Ошибка API');
+        }
+
+        let typeRows = [];
+        let picklists = { source_ips: [], destinations: [] };
+        try {
+            const optUrl = `/api/filter-options?period=${encodeURIComponent(period)}`;
+            const [typesRes, optRes] = await Promise.all([
+                fetch(typesUrl),
+                fetch(optUrl),
+            ]);
+            if (typesRes.ok) typeRows = await typesRes.json();
+            if (optRes.ok) picklists = await optRes.json();
+        } catch (e) {
+            console.warn('error-types / filter-options fetch failed', e);
+        }
+
         console.timeEnd('API_FETCH');
-        
-        // Обновление статуса и очистка ошибок
+
+        const events = Array.isArray(payload.events) ? payload.events : [];
+        historyState.hasMore = Boolean(payload.has_more);
+        historyState.nextCursor = payload.next_cursor || null;
+        historyState.summary = payload.summary || null;
+
+        if (!append) {
+            historyState.items = [...events];
+        } else {
+            const seen = new Set(historyState.items.map((x) => x.event_id));
+            events.forEach((e) => {
+                if (!seen.has(e.event_id)) {
+                    historyState.items.push(e);
+                    seen.add(e.event_id);
+                }
+            });
+        }
+
         document.getElementById('error-alert').classList.add('hidden');
         document.getElementById('status-indicator').innerHTML = `<span class="text-green-400">● Обновлено: ${new Date().toLocaleTimeString()}</span>`;
 
-        // --- ОБНОВЛЕНИЕ UI (ПОРЯДОК ВАЖЕН!) ---
-        updateKpiCards(data); // 1. KPI - сначала сводка
-        renderMainChart(data);   // 2. График трендов
-        renderTypeChart(data);    // 3. Топ причин с количеством
-        renderTable(data);      // 4. Таблица логов (самый объемный элемент)
+        if (!append) {
+            populateHistoryFilters(typeRows, picklists);
+        }
+        updateKpiCards(historyState.summary);
+        renderMainChart(historyState.items);
+        renderTypeChartFromApi(typeRows);
+        renderTable(historyState.items);
 
+        if (loadMoreBtn) {
+            loadMoreBtn.classList.toggle('hidden', !historyState.hasMore);
+            loadMoreBtn.disabled = !historyState.hasMore;
+        }
     } catch (err) {
-        console.error("Dashboard Error:", err);
+        console.error('Dashboard Error:', err);
         const errorText = document.getElementById('error-text');
         if (errorText) errorText.innerText = err.message;
         document.getElementById('error-alert').classList.remove('hidden');
         document.getElementById('status-indicator').innerHTML = '<span class="text-red-500">● Ошибка связи</span>';
+    } finally {
+        historyLoadLocked = false;
+        if (loadMoreBtn) {
+            loadMoreBtn.disabled = !historyState.hasMore;
+        }
     }
 }
 
-/**
- * Фильтрация логов по заголовкам (доработанный функционал).
- */
-function filterLogs(field) {
-    console.log(`Фильтруем логи по полю: ${field}`);
-    alert(`Успех! В идеальной реализации здесь должна произойти фильтрация и рендеринг таблицы, используя только отфильтрованные данные.`);
+window.refreshData = async function refreshData() {
+    try {
+        const r = await fetch('/api/update');
+        if (!r.ok) throw new Error(`update ${r.status}`);
+        await loadData({ resetPaging: true });
+    } catch (e) {
+        console.error(e);
+    }
+};
+
+function setupDashboardAutoRefresh() {
+    if (dashboardRefreshIntervalId) {
+        clearInterval(dashboardRefreshIntervalId);
+        dashboardRefreshIntervalId = null;
+    }
+    const sel = document.getElementById('refreshInterval');
+    if (!sel) return;
+    const val = parseInt(sel.value, 10);
+    try {
+        localStorage.setItem(LS_REFRESH, String(val));
+    } catch (_) { /* ignore */ }
+    if (val > 0) {
+        dashboardRefreshIntervalId = setInterval(() => {
+            loadData({ resetPaging: true });
+        }, val);
+    }
 }
 
 
 
 document.addEventListener('DOMContentLoaded', () => {
-    loadData(); // 1. Загрузка данных при старте страницы.
     const periodSelect = document.getElementById('periodFilter');
+    const refreshSelect = document.getElementById('refreshInterval');
+    try {
+        const savedP = localStorage.getItem(LS_PERIOD);
+        if (savedP && periodSelect && [...periodSelect.options].some((o) => o.value === savedP)) {
+            periodSelect.value = savedP;
+        }
+        const savedR = localStorage.getItem(LS_REFRESH);
+        if (savedR && refreshSelect && [...refreshSelect.options].some((o) => o.value === savedR)) {
+            refreshSelect.value = savedR;
+        }
+    } catch (_) { /* ignore */ }
+
+    loadData({ resetPaging: true });
+
     if (periodSelect) {
         periodSelect.addEventListener('change', () => {
+            try {
+                localStorage.setItem(LS_PERIOD, getSelectedPeriod());
+            } catch (_) { /* ignore */ }
             closeErrorTypeDrawer();
-            loadData();
+            loadData({ resetPaging: true });
         });
     }
+
+    const filterBtn = document.getElementById('filterApplyBtn');
+    if (filterBtn) {
+        filterBtn.addEventListener('click', () => loadData({ resetPaging: true }));
+    }
+
+    const loadMoreBtn = document.getElementById('historyLoadMore');
+    if (loadMoreBtn) {
+        loadMoreBtn.addEventListener('click', () => loadData({ append: true, resetPaging: false }));
+    }
+
+    const tbody = document.getElementById('tableBody');
+    if (tbody) {
+        tbody.addEventListener('click', (e) => {
+            const btn = e.target.closest('.copy-raw-btn');
+            if (!btn) return;
+            e.stopPropagation();
+            const gi = Number(btn.dataset.groupIndex);
+            const ii = Number(btn.dataset.instIndex ?? 0);
+            const inst = window.__lastHistoryGroups?.[gi]?.instances?.[ii];
+            const text = inst?.raw_message;
+            if (text) {
+                navigator.clipboard.writeText(text).catch(() => {});
+            }
+        });
+    }
+
     const backdrop = document.getElementById('errorDetailsBackdrop');
     if (backdrop) {
         backdrop.addEventListener('click', closeErrorTypeDrawer);
@@ -504,24 +732,8 @@ document.addEventListener('DOMContentLoaded', () => {
         }
     });
 
-    const select = document.getElementById('refreshInterval');
-    let refreshTimer = null;
-    
-    select.addEventListener('change', (e) => {
-        const val = parseInt(e.target.value);
-        if (refreshTimer) clearInterval(refreshTimer);
-        if (val > 0) {
-            // Установка интервала для автообновления
-            refreshTimer = setInterval(loadData, val); 
-        } else {
-            clearInterval(refreshTimer); // Остановить при ручном режиме
-            refreshTimer = null; // Сброс таймера
-        }
-    });
-
-    // Запуск первого таймера по умолчанию (30 секунд)
-    const defaultInterval = 30000; 
-    if (!refreshTimer) { 
-        setInterval(loadData, defaultInterval); 
+    if (refreshSelect) {
+        refreshSelect.addEventListener('change', () => setupDashboardAutoRefresh());
     }
+    setupDashboardAutoRefresh();
 });

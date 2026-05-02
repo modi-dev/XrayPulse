@@ -105,31 +105,45 @@
             <h3 class="text-2xl font-semibold text-blue-400 mt-8 mb-4 border-b pb-2">
                 История событий и подробный поиск
             </h3>
+            <div class="bg-gray-800 rounded-xl border border-gray-700 p-4 mb-4 shadow-xl space-y-3">
+                <div class="text-xs uppercase text-gray-500 tracking-wide">Фильтры</div>
+                <p class="text-[11px] text-gray-500 mb-1">Несколько значений: Ctrl (Windows) или Cmd (Mac) + клик по пунктам. Пустой список выбранных — без фильтра по этому полю.</p>
+                <div class="flex flex-wrap gap-4 items-end">
+                    <div class="flex flex-col gap-1">
+                        <label for="filterErrorTypes" class="text-xs text-gray-400">Тип ошибки</label>
+                        <select id="filterErrorTypes" multiple size="6" class="bg-gray-900 border border-gray-600 text-sm rounded px-2 py-1 min-w-[220px] max-w-[320px] max-h-40"></select>
+                    </div>
+                    <div class="flex flex-col gap-1">
+                        <label for="filterSourceIps" class="text-xs text-gray-400">IP источника</label>
+                        <select id="filterSourceIps" multiple size="6" class="bg-gray-900 border border-gray-600 text-sm rounded px-2 py-1 min-w-[180px] max-w-[240px] max-h-40"></select>
+                    </div>
+                    <div class="flex flex-col gap-1">
+                        <label for="filterDestinations" class="text-xs text-gray-400">Inbound / цель</label>
+                        <select id="filterDestinations" multiple size="6" class="bg-gray-900 border border-gray-600 text-sm rounded px-2 py-1 min-w-[200px] max-w-[280px] max-h-40"></select>
+                    </div>
+                    <button type="button" id="filterApplyBtn" class="bg-blue-600 hover:bg-blue-500 text-sm px-4 py-1.5 rounded">Применить</button>
+                </div>
+            </div>
             <div class="bg-gray-800 rounded-xl border border-gray-700 overflow-hidden shadow-xl">
                 <table class="w-full text-left">
-                    <!-- Header: Добавлено hover для интерактивности -->
                     <thead class="text-xs text-gray-400 uppercase bg-gray-800 sticky top-0">
-                        <tr class="cursor-pointer hover:bg-gray-700 transition" onclick="filterLogs('time')">
-                            <th class="px-4 py-3 w-1/6">Время</th>
-                        </tr>
-                         <!-- Увеличиваем ширины колонок для лучшего отображения -->
-                        <tr class="cursor-pointer hover:bg-gray-700 transition" onclick="filterLogs('source')">
-                            <th class="px-4 py-3 w-1/6">Источник (Source)</th>
-                        </tr>
-                        <tr class="cursor-pointer hover:bg-gray-700 transition" onclick="filterLogs('target')">
-                            <th class="px-4 py-3 w-1/6">Цель (Target)</th>
-                        </tr>
-                        <tr class="cursor-pointer hover:bg-gray-700 transition" onclick="filterLogs('type')">
-                            <th class="px-4 py-3 w-1/6">Ошибка</th>
-                        </tr>
-                        <tr class="cursor-pointer hover:bg-gray-700 transition" onclick="filterLogs('description')">
-                            <th class="px-4 py-3 w-2/6">Описание</th>
+                        <tr>
+                            <th class="px-4 py-3 w-[14%]">Время</th>
+                            <th class="px-4 py-3 w-[18%]">Источник</th>
+                            <th class="px-4 py-3 w-[14%]">Inbound / цель</th>
+                            <th class="px-4 py-3 w-[20%]">Ошибка</th>
+                            <th class="px-4 py-3 w-[26%]">Описание</th>
+                            <th class="px-4 py-3 w-[8%] text-center">Сырой лог</th>
                         </tr>
                     </thead>
                     <tbody id="tableBody">
-                        <!-- Здесь будет заполнение JavaScript -->
                     </tbody>
                 </table>
+                <div class="p-3 border-t border-gray-700 flex justify-center">
+                    <button type="button" id="historyLoadMore" class="hidden text-sm px-4 py-2 rounded bg-gray-700 hover:bg-gray-600 text-gray-200 border border-gray-600">
+                        Загрузить ещё
+                    </button>
+                </div>
             </div>
         </div>
     </div>
@@ -151,6 +165,6 @@
         </div>
     </aside>
 <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
-<script src="{{ url_for('static', filename='js/app.js', v='20260428-1900') }}"></script>
+<script src="{{ url_for('static', filename='js/app.js', v='20260502-2300') }}"></script>
 </body>
 </html>
