@@ -506,6 +506,12 @@ def api_history():
         source_ip_query = (request.args.get('source_ip') or '').strip() or None
         destination_keys = request.args.getlist('destination')
         cursor_token = request.args.get('cursor')
+        exclude_probe = request.args.get("exclude_probe", "").strip().lower() in (
+            "1",
+            "true",
+            "yes",
+            "on",
+        )
 
         cur_ts, cur_rid = _decode_history_cursor(cursor_token)
 
@@ -517,12 +523,14 @@ def api_history():
             destination_keys=destination_keys or None,
             cursor_ts=cur_ts,
             cursor_rowid=cur_rid,
+            exclude_probe=exclude_probe,
         )
         summary = get_history_summary(
             period=period,
             error_type_ids=error_type_ids or None,
             source_ip_query=source_ip_query,
             destination_keys=destination_keys or None,
+            exclude_probe=exclude_probe,
         )
 
         formatted = []
@@ -547,7 +555,8 @@ def api_history():
             "METRIC api_history "
             f"duration_ms={elapsed_ms} rows={len(formatted)} limit={limit} period={period} "
             f"has_more={int(has_more)} etypes={len(error_type_ids)} "
-            f"src_ip_q={int(bool(source_ip_query))} dests={len(destination_keys)}"
+            f"src_ip_q={int(bool(source_ip_query))} dests={len(destination_keys)} "
+            f"exclude_probe={int(exclude_probe)}"
         )
 
         return jsonify({
@@ -566,7 +575,13 @@ def api_history():
 def api_filter_options():
     try:
         period = request.args.get('period', '7d')
-        return jsonify(get_filter_picklists(period))
+        exclude_probe = request.args.get("exclude_probe", "").strip().lower() in (
+            "1",
+            "true",
+            "yes",
+            "on",
+        )
+        return jsonify(get_filter_picklists(period, exclude_probe=exclude_probe))
     except Exception as e:
         print(f"Error filter-options: {e}")
         return jsonify({"error": str(e)}), 500
@@ -577,7 +592,13 @@ def api_filter_options():
 def api_error_types():
     try:
         period = request.args.get('period', '7d')
-        rows = get_aggregated_history(period)
+        exclude_probe = request.args.get("exclude_probe", "").strip().lower() in (
+            "1",
+            "true",
+            "yes",
+            "on",
+        )
+        rows = get_aggregated_history(period, exclude_probe=exclude_probe)
         return jsonify([{
             "id": row[0],
             "error_type": row[1],
@@ -593,7 +614,13 @@ def api_error_types():
 def api_error_type_events(error_type_id):
     try:
         period = request.args.get('period', '7d')
-        rows = get_events_by_error_type(error_type_id, 200, period)
+        exclude_probe = request.args.get("exclude_probe", "").strip().lower() in (
+            "1",
+            "true",
+            "yes",
+            "on",
+        )
+        rows = get_events_by_error_type(error_type_id, 200, period, exclude_probe=exclude_probe)
         out = []
         for row in rows:
             row = _format_event_row(row)

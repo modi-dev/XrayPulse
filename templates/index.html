@@ -89,7 +89,13 @@
             <!-- START: Графики -->
             <div class="mb-6">
                 <div class="bg-gray-800 p-6 rounded-xl border border-gray-700 shadow-xl">
-                    <h3 class="text-lg font-semibold text-blue-400 mb-4">Топ причин ошибок (Причина и количество)</h3>
+                    <div class="flex flex-wrap items-center justify-between gap-3 mb-4">
+                        <h3 class="text-lg font-semibold text-blue-400">Топ причин ошибок (Причина и количество)</h3>
+                        <label class="flex items-center gap-2 cursor-pointer select-none">
+                            <input type="checkbox" id="topExcludeProbe" data-exclude-probe-toggle="1" class="rounded border-gray-600 bg-gray-900 text-blue-500 focus:ring-blue-500" checked />
+                            <span class="text-xs text-gray-300 leading-snug">Скрыть шум (скан порта, мусорный TLS)</span>
+                        </label>
+                    </div>
                     <div id="typeSummary" class="space-y-2"></div>
                 </div>
             </div>
@@ -125,6 +131,10 @@
                             </div>
                         </div>
                     </div>
+                    <label class="flex items-center gap-2 cursor-pointer select-none min-w-[220px] max-w-[280px] self-end pb-1">
+                        <input type="checkbox" id="filterExcludeProbe" data-exclude-probe-toggle="1" class="rounded border-gray-600 bg-gray-900 text-blue-500 focus:ring-blue-500" checked />
+                        <span class="text-xs text-gray-300 leading-snug">Скрыть шум (скан порта, мусорный TLS)</span>
+                    </label>
                     <div class="flex flex-col gap-1 min-w-[200px] max-w-[280px]">
                         <label for="filterSourceIpSearch" class="text-xs text-gray-400">IP источника (поиск)</label>
                         <input type="search" id="filterSourceIpSearch" class="w-full rounded border border-gray-600 bg-gray-900 px-2 py-1.5 text-sm text-gray-100 placeholder:text-gray-500 focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500" placeholder="Напр. 192.168 или Client" autocomplete="off" />
@@ -189,6 +199,6 @@
         </div>
     </aside>
 <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
-<script src="{{ url_for('static', filename='js/app.js', v='20260502-2520') }}"></script>
+<script src="{{ url_for('static', filename='js/app.js', v='20260505-probe') }}"></script>
 </body>
 </html>

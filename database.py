@@ -2,6 +2,8 @@ import os
 import sqlite3
 from datetime import datetime, timedelta
 
+from parser import is_likely_probe_noise
+
 DEFAULT_ERROR_DESCRIPTION = "Неизвестная проблема"
 
 # Сопоставление подстроки в тексте сообщения (нижний регистр) → человекочитаемое описание.
@@ -79,6 +81,7 @@ def init_db():
                 destination_port INTEGER,
                 raw_message TEXT NOT NULL,
                 error_type_id INTEGER NOT NULL,
+                is_likely_probe INTEGER NOT NULL DEFAULT 0,
                 UNIQUE (timestamp, raw_message),
                 FOREIGN KEY(error_type_id) REFERENCES error_types(id)
             )
@@ -115,8 +118,47 @@ def init_db():
             )
         ''')
 
+        _ensure_error_events_is_likely_probe(conn)
         _migrate_legacy_data(conn)
         conn.commit()
+
+
+def _backfill_is_likely_probe(conn):
+    """Проставляет is_likely_probe для строк, созданных до появления колонки."""
+    ids = []
+    for row in conn.execute(
+        """
+        SELECT e.id, e.raw_message, t.normalized_text
+        FROM error_events e
+        JOIN error_types t ON t.id = e.error_type_id
+        WHERE e.is_likely_probe = 0
+        """
+    ):
+        eid, raw, norm = row[0], row[1] or "", row[2] or ""
+        if is_likely_probe_noise(raw, norm):
+            ids.append(int(eid))
+            if len(ids) >= 400:
+                conn.execute(
+                    f"UPDATE error_events SET is_likely_probe = 1 WHERE id IN ({','.join('?' * len(ids))})",
+                    ids,
+                )
+                ids.clear()
+    if ids:
+        conn.execute(
+            f"UPDATE error_events SET is_likely_probe = 1 WHERE id IN ({','.join('?' * len(ids))})",
+            ids,
+        )
+
+
+def _ensure_error_events_is_likely_probe(conn):
+    existing_columns = {row[1] for row in conn.execute("PRAGMA table_info(error_events)").fetchall()}
+    if "is_likely_probe" in existing_columns:
+        return
+    conn.execute(
+        "ALTER TABLE error_events ADD COLUMN is_likely_probe INTEGER NOT NULL DEFAULT 0"
+    )
+    _backfill_is_likely_probe(conn)
+
 
 def get_error_log_ingestion_state(path):
     """Возвращает (byte_offset, file_inode) или (None, None), если записи ещё нет."""
@@ -153,10 +195,15 @@ def save_errors(data_list):
             desc = describe_error_message(item.get('msg') or '')
             normalized_type = item.get('error_type') or item['msg']
             error_type_id = _get_or_create_error_type(conn, normalized_type, desc)
+            probe = item.get("is_likely_probe")
+            if probe is None:
+                probe = int(bool(is_likely_probe_noise(item.get("msg") or "", normalized_type)))
+            else:
+                probe = int(bool(probe))
             conn.execute('''
                 INSERT OR IGNORE INTO error_events (
-                    timestamp, source_ip, source_port, destination_host, destination_port, raw_message, error_type_id
-                ) VALUES (?, ?, ?, ?, ?, ?, ?)
+                    timestamp, source_ip, source_port, destination_host, destination_port, raw_message, error_type_id, is_likely_probe
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
             ''', (
                 item['ts'],
                 item.get('src'),
@@ -164,7 +211,8 @@ def save_errors(data_list):
                 item.get('dest_host'),
                 item.get('dest_port'),
                 item['msg'],
-                error_type_id
+                error_type_id,
+                probe,
             ))
         conn.commit()
 
@@ -180,15 +228,16 @@ def get_latest_logs(limit=30):
         ''', (limit,))
         return cursor.fetchall()
 
-def get_aggregated_history(period='7d'):
+def get_aggregated_history(period='7d', exclude_probe=False):
     since = _period_to_since(period)
+    probe_clause = " AND e.is_likely_probe = 0" if exclude_probe else ""
     with sqlite3.connect('xray_monitor.db') as conn:
         cursor = conn.cursor()
-        cursor.execute('''
+        cursor.execute(f'''
             SELECT t.id, t.normalized_text, t.description, COUNT(*) as total
             FROM error_events e
             JOIN error_types t ON t.id = e.error_type_id
-            WHERE datetime(replace(e.timestamp, '/', '-')) >= datetime(?)
+            WHERE datetime(replace(e.timestamp, '/', '-')) >= datetime(?){probe_clause}
             GROUP BY t.id, t.normalized_text, t.description
             ORDER BY total DESC
         ''', (since,))
@@ -225,11 +274,20 @@ def _destination_key_sql():
     )
 
 
-def _history_filter_sql(period, error_type_ids=None, source_ip_query=None, destination_keys=None):
+def _history_filter_sql(
+    period,
+    error_type_ids=None,
+    source_ip_query=None,
+    destination_keys=None,
+    exclude_probe=False,
+):
     """WHERE для истории: период + опционально несколько типов, подстрока IP, целей."""
     since = _period_to_since(period)
     clauses = ["datetime(replace(e.timestamp, '/', '-')) >= datetime(?)"]
     params = [since]
+
+    if exclude_probe:
+        clauses.append("e.is_likely_probe = 0")
 
     et_ids = _int_list(error_type_ids)
     if et_ids:
@@ -251,9 +309,17 @@ def _history_filter_sql(period, error_type_ids=None, source_ip_query=None, desti
     return " AND ".join(clauses), params
 
 
-def get_history_summary(period='7d', error_type_ids=None, source_ip_query=None, destination_keys=None):
+def get_history_summary(
+    period='7d',
+    error_type_ids=None,
+    source_ip_query=None,
+    destination_keys=None,
+    exclude_probe=False,
+):
     """Агрегаты по отфильтрованной выборке (для KPI)."""
-    where_sql, params = _history_filter_sql(period, error_type_ids, source_ip_query, destination_keys)
+    where_sql, params = _history_filter_sql(
+        period, error_type_ids, source_ip_query, destination_keys, exclude_probe
+    )
     with sqlite3.connect('xray_monitor.db') as conn:
         row = conn.execute(
             f'''
@@ -270,9 +336,10 @@ def get_history_summary(period='7d', error_type_ids=None, source_ip_query=None, 
     return {"total": int(row[0]), "distinct_types": int(row[1]), "distinct_sources": int(row[2])}
 
 
-def get_filter_picklists(period='7d', limit=400):
+def get_filter_picklists(period='7d', limit=400, exclude_probe=False):
     """Уникальные значения для выпадающих фильтров за период."""
     since = _period_to_since(period)
+    probe_clause = " AND e.is_likely_probe = 0" if exclude_probe else ""
     with sqlite3.connect('xray_monitor.db') as conn:
         cur = conn.cursor()
         key_sql = _destination_key_sql()
@@ -281,7 +348,7 @@ def get_filter_picklists(period='7d', limit=400):
             SELECT DISTINCT dst FROM (
                 SELECT {key_sql} AS dst
                 FROM error_events e
-                WHERE datetime(replace(e.timestamp, '/', '-')) >= datetime(?)
+                WHERE datetime(replace(e.timestamp, '/', '-')) >= datetime(?){probe_clause}
             )
             WHERE dst != ''
             ORDER BY dst
@@ -302,12 +369,15 @@ def get_history_records(
     destination_keys=None,
     cursor_ts=None,
     cursor_rowid=None,
+    exclude_probe=False,
 ):
     """
     История с фильтрами и keyset-пагинацией по (timestamp DESC, rowid DESC).
     Возвращает (rows, has_more) где rows — не более limit элементов.
     """
-    where_sql, params = _history_filter_sql(period, error_type_ids, source_ip_query, destination_keys)
+    where_sql, params = _history_filter_sql(
+        period, error_type_ids, source_ip_query, destination_keys, exclude_probe
+    )
     if cursor_ts is not None and cursor_rowid is not None:
         where_sql = (
             f"({where_sql}) AND (e.timestamp < ? OR (e.timestamp = ? AND e.rowid < ?))"
@@ -333,7 +403,8 @@ def get_history_records(
                 t.description AS desc,
                 e.raw_message,
                 e.destination_host,
-                e.destination_port
+                e.destination_port,
+                e.is_likely_probe AS is_likely_probe
             FROM error_events e
             JOIN error_types t ON t.id = e.error_type_id
             WHERE {where_sql}
@@ -349,12 +420,13 @@ def get_history_records(
         rows = rows[:limit]
     return rows, has_more
 
-def get_events_by_error_type(error_type_id, limit=200, period='7d'):
+def get_events_by_error_type(error_type_id, limit=200, period='7d', exclude_probe=False):
     since = _period_to_since(period)
+    probe_clause = " AND e.is_likely_probe = 0" if exclude_probe else ""
     with sqlite3.connect('xray_monitor.db') as conn:
         conn.row_factory = sqlite3.Row
         cursor = conn.cursor()
-        cursor.execute('''
+        cursor.execute(f'''
             SELECT
                 e.rowid AS event_id,
                 e.timestamp,
@@ -364,11 +436,12 @@ def get_events_by_error_type(error_type_id, limit=200, period='7d'):
                 e.destination_port,
                 e.raw_message,
                 t.normalized_text AS error_type,
-                t.description
+                t.description,
+                e.is_likely_probe AS is_likely_probe
             FROM error_events e
             JOIN error_types t ON t.id = e.error_type_id
             WHERE e.error_type_id = ?
-              AND datetime(replace(e.timestamp, '/', '-')) >= datetime(?)
+              AND datetime(replace(e.timestamp, '/', '-')) >= datetime(?){probe_clause}
             ORDER BY e.timestamp DESC
             LIMIT ?
         ''', (error_type_id, since, limit))
@@ -412,11 +485,13 @@ def _migrate_legacy_data(conn):
             if possible_port.isdigit():
                 dest_host = possible_host
                 dest_port = int(possible_port)
+        raw_for_probe = error_type or ""
+        probe = int(bool(is_likely_probe_noise(raw_for_probe, raw_for_probe)))
         conn.execute('''
             INSERT OR IGNORE INTO error_events (
-                timestamp, source_ip, source_port, destination_host, destination_port, raw_message, error_type_id
-            ) VALUES (?, ?, ?, ?, ?, ?, ?)
-        ''', (ts, source, None, dest_host, dest_port, error_type or '', et_id))
+                timestamp, source_ip, source_port, destination_host, destination_port, raw_message, error_type_id, is_likely_probe
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        ''', (ts, source, None, dest_host, dest_port, error_type or '', et_id, probe))
 
 def _period_to_since(period):
     period_map = {

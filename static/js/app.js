@@ -5,6 +5,21 @@
 
 const LS_PERIOD = 'xraypulse_period';
 const LS_REFRESH = 'xraypulse_refresh_ms';
+const LS_EXCLUDE_PROBE = 'xraypulse_exclude_probe';
+const EXCLUDE_PROBE_TOGGLE_SELECTOR = 'input[data-exclude-probe-toggle="1"]';
+
+/** Скрывать события, помеченные как вероятный шум сканирования/TLS (параметр exclude_probe). */
+function isExcludeProbeChecked() {
+    const els = document.querySelectorAll(EXCLUDE_PROBE_TOGGLE_SELECTOR);
+    if (!els.length) return false;
+    return Boolean(els[0].checked);
+}
+
+function setExcludeProbeChecked(value) {
+    document.querySelectorAll(EXCLUDE_PROBE_TOGGLE_SELECTOR).forEach((el) => {
+        el.checked = Boolean(value);
+    });
+}
 
 let dashboardRefreshIntervalId = null;
 // Инстансы для Chart.js, чтобы их можно было уничтожать и пересоздавать при обновлении данных
@@ -497,6 +512,9 @@ function renderTable(rawData) {
         const countBadge = group.count > 1
             ? `<span class="shrink-0 px-2 py-0.5 bg-blue-900/50 text-blue-400 border border-blue-500/30 rounded text-[10px] font-bold">×${group.count}</span>`
             : '';
+        const noiseBadge = group.instances?.some((i) => Number(i.is_likely_probe) === 1)
+            ? `<span class="shrink-0 ml-2 px-1.5 py-0.5 bg-amber-900/40 text-amber-300/90 border border-amber-600/30 rounded text-[10px] font-semibold" title="Помечено как вероятный шум сканирования/TLS">шум</span>`
+            : '';
 
         const row = document.createElement('tr');
         row.className = 'border-b border-gray-700 hover:bg-gray-750 transition cursor-pointer';
@@ -515,7 +533,7 @@ function renderTable(rawData) {
             <td class="px-4 py-3 text-xs text-red-400 font-mono align-top">
                 <div class="flex items-start justify-between gap-2 min-w-0">
                     <span class="min-w-0 flex-1 whitespace-normal break-words leading-snug">${group.type}</span>
-                    ${countBadge}
+                    <span class="flex shrink-0 items-center gap-1">${countBadge}${noiseBadge}</span>
                 </div>
             </td>
             <td class="px-4 py-3 text-sm text-gray-300">${group.desc}</td>
@@ -588,7 +606,10 @@ window.showErrorTypeDetails = async function(errorTypeId, errorTypeName = '') {
 
     try {
         const period = getSelectedPeriod();
-        const response = await fetch(`/api/error-types/${errorTypeId}/events?period=${encodeURIComponent(period)}`);
+        const probeQs = isExcludeProbeChecked() ? '&exclude_probe=1' : '';
+        const response = await fetch(
+            `/api/error-types/${errorTypeId}/events?period=${encodeURIComponent(period)}${probeQs}`,
+        );
         if (!response.ok) throw new Error(`Ошибка сервера: ${response.status}`);
         const events = await response.json();
         if (!events.length) {
@@ -654,6 +675,9 @@ function buildHistoryUrl(append) {
     const sip = document.getElementById('filterSourceIpSearch')?.value?.trim();
     if (sip) params.set('source_ip', sip);
     appendCheckedListParam(params, 'destination', 'filterDestinationsList');
+    if (isExcludeProbeChecked()) {
+        params.set('exclude_probe', '1');
+    }
     return `/api/history?${params.toString()}`;
 }
 
@@ -685,7 +709,8 @@ async function loadData(options = {}) {
             historyState.nextCursor = null;
         }
         const historyUrl = buildHistoryUrl(append);
-        const typesUrl = `/api/error-types?period=${encodeURIComponent(period)}`;
+        const probeQs = isExcludeProbeChecked() ? '&exclude_probe=1' : '';
+        const typesUrl = `/api/error-types?period=${encodeURIComponent(period)}${probeQs}`;
 
         const histRes = await fetch(historyUrl);
         if (await redirectIfUnauthorized(histRes)) return;
@@ -699,7 +724,7 @@ async function loadData(options = {}) {
         let typeRows = [];
         let picklists = { destinations: [] };
         try {
-            const optUrl = `/api/filter-options?period=${encodeURIComponent(period)}`;
+            const optUrl = `/api/filter-options?period=${encodeURIComponent(period)}${probeQs}`;
             const [typesRes, optRes] = await Promise.all([
                 fetch(typesUrl),
                 fetch(optUrl),
@@ -792,6 +817,7 @@ function setupDashboardAutoRefresh() {
 document.addEventListener('DOMContentLoaded', () => {
     const periodSelect = document.getElementById('periodFilter');
     const refreshSelect = document.getElementById('refreshInterval');
+    const excludeProbeToggles = Array.from(document.querySelectorAll(EXCLUDE_PROBE_TOGGLE_SELECTOR));
     try {
         const savedP = localStorage.getItem(LS_PERIOD);
         if (savedP && periodSelect && [...periodSelect.options].some((o) => o.value === savedP)) {
@@ -801,7 +827,36 @@ document.addEventListener('DOMContentLoaded', () => {
         if (savedR && refreshSelect && [...refreshSelect.options].some((o) => o.value === savedR)) {
             refreshSelect.value = savedR;
         }
+        if (excludeProbeToggles.length) {
+            const savedProbe = localStorage.getItem(LS_EXCLUDE_PROBE);
+            setExcludeProbeChecked(savedProbe !== '0');
+        }
     } catch (_) { /* ignore */ }
+
+    if (excludeProbeToggles.length) {
+        excludeProbeToggles.forEach((toggle) => {
+            toggle.addEventListener('change', () => {
+                const checked = Boolean(toggle.checked);
+                setExcludeProbeChecked(checked);
+                try {
+                    localStorage.setItem(LS_EXCLUDE_PROBE, checked ? '1' : '0');
+                } catch (_) { /* ignore */ }
+                closeErrorTypeDrawer();
+                loadData({ resetPaging: true });
+            });
+        });
+    }
+
+    if (!excludeProbeToggles.length) {
+        const excludeProbeCb = document.getElementById('filterExcludeProbe');
+        excludeProbeCb?.addEventListener('change', () => {
+            try {
+                localStorage.setItem(LS_EXCLUDE_PROBE, excludeProbeCb.checked ? '1' : '0');
+            } catch (_) { /* ignore */ }
+            closeErrorTypeDrawer();
+            loadData({ resetPaging: true });
+        });
+    }
 
     loadData({ resetPaging: true });
 

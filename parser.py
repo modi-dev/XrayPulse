@@ -41,6 +41,74 @@ def split_host_port(endpoint):
     return endpoint, None
 
 
+# Подстроки (нижний регистр): совпадение в сыром или нормализованном тексте → событие считаем «шумом» сканирования/TLS, а не типичной пользовательской ошибкой.
+_DEFAULT_PROBE_NOISE_MARKERS = (
+    "invalid connection",
+    "processed invalid connection",
+    "failed to read client hello",
+    "failed to read hello",
+    "unsupported tls",
+    "incompatible cipher suite",
+    "incompatible cipher",
+    "no cipher suite",
+    "no application protocol",
+    "first record does not look like a tls",
+    "does not look like a tls handshake",
+    "unknown certificate",
+    "unknown protocol",
+    "certificate unknown",
+    "bad certificate",
+    "illegal parameter",
+    "decode error",
+    "wrong version number",
+    "protocol version",
+    "tls: no application",
+    "client offered only unsupported",
+    "ssl routines",
+    "http request",
+    "https request",
+    "plain http",
+    "socks",
+    "ssh-",
+    "mysql",
+    "redis",
+    "mongodb",
+    "rdp/",
+    "rdp ",
+    "negotiation failed",
+)
+
+
+def _probe_noise_markers():
+    """
+    Список маркеров шума. Если задан PROBE_NOISE_MARKERS — полная замена (через запятую);
+    иначе дефолт + дополнительные из PROBE_NOISE_EXTRA_MARKERS.
+    """
+    raw = os.getenv("PROBE_NOISE_MARKERS", "").strip()
+    if raw:
+        return tuple(x.strip().lower() for x in raw.split(",") if x.strip())
+    extra = os.getenv("PROBE_NOISE_EXTRA_MARKERS", "").strip()
+    out = list(_DEFAULT_PROBE_NOISE_MARKERS)
+    if extra:
+        out.extend(x.strip().lower() for x in extra.split(",") if x.strip())
+    return tuple(out)
+
+
+def is_likely_probe_noise(raw_message: str, normalized_type: str) -> bool:
+    """Эвристика: скан порта, мусорный TLS, чужие протоколы — не то же самое, что ошибка профиля пользователя."""
+    raw = raw_message or ""
+    hay = f"{raw} {normalized_type or ''}".lower()
+
+    # REALITY: server name mismatch с непустым SNI — чаще неверный sni в клиенте, не «шум» сканера.
+    # Пустой SNI после двоеточия — типичный зонд/скан.
+    if "server name mismatch" in hay:
+        m = re.search(r"server name mismatch:\s*(.*)$", raw, re.IGNORECASE | re.DOTALL)
+        rest = (m.group(1) or "").strip() if m else ""
+        return len(rest) == 0
+
+    return any(m in hay for m in _probe_noise_markers())
+
+
 def normalize_error_type(raw_msg):
     """Нормализует текст ошибки, убирая переменные данные (IP/порт/идентификаторы)."""
     msg = re.sub(r'\[\d{8,12}\]\s*', '', raw_msg)
@@ -146,6 +214,7 @@ def _try_parse_xray_log_line(line):
         "dest_port": dest_port,
         "msg": clean_msg.strip()[:350],
         "error_type": normalized_type,
+        "is_likely_probe": int(bool(is_likely_probe_noise(clean_msg.strip(), normalized_type))),
     }
 
 
